@@ -1,493 +1,568 @@
-# Mesh → .schem: dataset, voxelizer, model and eval plan
+# Mesh → .schem: dataset, voxeliser, model and evaluation plan
 
-*Proposal, 2026-09-12. Research and design only — no model code, no pipeline code, nothing
-in the Flask app touched. Section 5 lists the decisions this needs from you before anything
-is built.*
+**Current scope (2026-09-28): foundation and small-pilot quality review only.**
+Do not train a model or scale to a large dataset. See
+[the resumed quality audit](dataset-quality-audit.md) for the current implementation,
+paired TRELLIS experiment and remaining problems. The model and scale-up sections below
+are historical planning, not authorization to execute them.
 
-The pivot decouples two problems that the manual collector and `house_grammar` were trying
-to solve at once: **where building shapes come from** (a bulk 3D dataset of real
-architecture) and **how a shape becomes a Minecraft build** (deterministic voxelize +
-palette code, then a learned model that does it robustly on TRELLIS output). This document
-proposes how to do each half so it fits what already exists in this repo and in
-`Real2Minecraft`.
+*Version 3, 2026-09-26. Version 2 (2026-09-24) proposed the plan and ran pilot v1; version 3
+records your V1 decisions (section 9), the dataset pipeline built on them and pilot v2
+(section 6.6). The pipeline itself is documented in [dataset-pipeline.md](dataset-pipeline.md).
+No model code has been written.*
+
+Companion documents:
+
+- [dataset-pipeline.md](dataset-pipeline.md) — the V1 preprocessing pipeline: stages, reason
+  codes, configuration, outputs, commands, known limitations.
+- [dataset-licensing.md](dataset-licensing.md) — the licence register, written before any
+  mesh was downloaded.
+- `eval/real-eval-v1.json` — the held-out real evaluation set (64 builds, one per family).
+- `data/synthetic/pilot-v2/` (gitignored) — pilot v2: pairs, report.md, contact sheets,
+  review tool data. `pilot-v1/` is the earlier run.
+
+Sections 0–8 describe version 2's findings and pilot v1; where V1 decisions changed them
+(1:1 scale, no photogrammetry, builder roofs, the fixed voxeliser), section 6.6 and section 9
+say so.
 
 ---
 
-## 0. Four findings that change the plan
+## 0. Where things stand
 
-**1. The fine-tune / eval pairs do not exist yet.** All 122 builds in the library are at
-`needs_image`: there are 110 reference screenshots, **zero** AI-generated images and
-**zero** TRELLIS meshes (`data/collector.db` and `git ls-files` agree). The 106 real
-schematics are usable as *targets* today, but every real `(mesh, schem)` pair still has to
-be produced by hand through the screenshot → AI photo → TRELLIS path. Section 4 budgets
-that.
-
-**2. Most of "step 2" already exists — in `Real2Minecraft`, not here.** The request calls
-colour/material → blockstate "new". It is not: the sibling project
-`C:\Users\mendo\Documents\Projects\Real2Minecraft` (last commit 2026-07-14) already has
-
-| Module | What it does |
+| Area | Status |
 | --- | --- |
-| `voxelize.py` | SAT triangle-box surface rasterisation (gap-free), exterior flood fill, cleanup — the orchestrator `voxelize_mesh` |
-| `voxel_sampling.py` | per-voxel colour from the mesh texture: mode-seeking, side-aware surface splatting |
-| `color_quantize.py` | k-means + merge in weighted LAB, shadow → albedo repaint, spatial coherence |
-| `block_palette.py` | ~113-block curated palette, weighted-CIELAB KD-tree `match_blocks`, `AUX_PALETTE` for glass, `match_blocks_restricted` |
-| `block_shapes.py` | octant-based full / slab / stairs classification with facing, `BLOCK_VARIANTS` slab+stair table, `apply_shapes` |
-| `mesh_normalize.py`, `building/yaw_align.py` | Y-up ground placement, XZ centring, facade-to-axis yaw alignment |
-| `building/massing.py`, `facade*.py`, `assemble.py` | rule-based building mode with per-voxel semantic labels (wall / window / door / roof / floor …) |
-| `trellis_client.py` | drives the local TRELLIS FastAPI server (`:7960`, simplify 0.9, 1024 texture, 24 steps) |
-| `training/__init__.py` | a stub for exactly the "degrade a mesh to imitate TRELLIS" idea |
-| `outputs/trellis/` | **228 cached real TRELLIS outputs (358 MB)** — the calibration set for any "make it look like TRELLIS" step |
+| Licensing | Register written first. Policy: **CC0 + CC BY 4.0 only**, all five uses open with attribution. |
+| Source dataset | Objaverse 1.0 indexed from metadata: **21,584** building objects pass the filters, **14,804** of them permissively licensed. Thin in exactly the categories you care most about. |
+| Shared code | `mcvoxel` package extracted inside Real2Minecraft and installed into this repo. Real2Minecraft's outputs verified **byte-identical**. |
+| Real library | **0** usable (mesh, schem) pairs today. 106 real builds from **64** independent sources, 78% detached houses. Recommended: **evaluation only**. |
+| Large buildings | Tiled inference designed and tested; 64³, 96³ and 128³ windows all fit the 4060 Ti. |
+| Pilot | **200** diverse objects → **166** pairs after automatic QA, in about 8 minutes. Hand audit: **57% clean, 22% flawed, 21% junk**. |
+| Degradation | Modelled on TRELLIS's own bottleneck and calibrated against 54 real TRELLIS meshes. |
 
-What is genuinely new is: bulk ingest of a 3D dataset, running that code offline over
-thousands of meshes, the **input/target asymmetry** below, the pair format, and the model.
-
-**3. A deterministic target is only worth learning if the input is worse than what made
-the target.** If the target `.schem` is `f(mesh)` and the model's input is the same mesh,
-the model learns to imitate `f` — which you could just run at inference. The model earns
-its place only if the training input is a *degraded, TRELLIS-like* version of the source
-mesh while the target is computed from the *clean* source (plus information the clean
-source has and TRELLIS output does not: material names, transparency flags, exact
-geometry). This is Decision 1 and it shapes the whole data generator.
-
-**4. Your compute is a single 16 GB consumer GPU.** RTX 4060 Ti 16 GB, 32 GB RAM,
-i9-12900K, **164 GB free on C:**. That is enough to train the model proposed in section 3
-locally in days, but not enough disk to keep the raw meshes of a 15k-object subset
-(≈165 GB at Objaverse's ~11 MB average): the ingest has to stream (download → voxelize →
-delete).
+The pipeline works end to end at a cost that scales (10 s and 166 KB per pair). Two things
+must be settled before a full run: how much junk is acceptable (section 6.4), and whether
+targets should follow geometry or builder convention for roofs (section 6.3).
 
 ---
 
-## 1. Source datasets
+## 1. Your decisions, and what each changed
 
-### 1.1 Candidates compared
-
-Counts marked **measured** come from files I downloaded and scanned during this research
-(one 5,000-object Objaverse metadata shard, the LVIS annotation file, and both
-TRELLIS-500K Objaverse csvs); everything else is from the dataset's own documentation.
-
-| Dataset | What it is | Houses / towers | Texture & quality | Usable count (est.) | Licence | Bulk download + filtering |
-| --- | --- | --- | --- | --- | --- | --- |
-| **Objaverse 1.0 (Sketchfab)** via TRELLIS-500K + Cap3D captions | 798k CC-licensed artist models and photogrammetry scans | **measured:** 17.6% of TRELLIS-500K's 168,307 Sketchfab objects have a building word in their caption (29,574); 13,959 are house-like and not blocky. In the raw shard: 9.0% carry Sketchfab's `architecture` category; 1.6% pass keyword ∧ architecture ∧ not-Minecraft → ≈12k over the full set | Textured (UV atlas or vertex colour). Mixed: face count p10 374 / median 18k / p90 916k. ~3–4% Minecraft/LEGO/voxel contamination in the building hits — must be filtered out | **8–15k** standalone buildings after filters | Per object. **Measured shard:** CC-BY 88.4%, BY-NC-SA 5.8%, BY-NC 3.1%, BY-SA 2.2%, CC0 0.5%. Dataset wrapper ODC-By 1.0 | Excellent. `objaverse.load_objects(uids)` downloads by uid; captions (Cap3D 255 MB csv, TRELLIS-500K 167 MB csv with aesthetic score), Sketchfab tags/categories, Objaverse++ quality flags all keyed by uid |
-| **Objaverse-XL GitHub subset** (TRELLIS-500K `ObjaverseXL_github.csv`) | 3D files scraped from public GitHub repos | **measured:** 22,696 of 311,843 building-captioned; 7,706 house-like non-blocky (many are game assets, OSM and swisstopo exports) | Lower and more uniform quality | ~5–8k | **No per-object licence.** The Objaverse-XL paper states users must assess each object's licence for downstream use; most repos carry none | Same toolkit, but licence triage is manual |
-| **BuildingNet** | 2,000 textured building meshes mined from Trimble 3D Warehouse, 513k labelled parts (wall / roof / window / door …) | Residential 1,424, Religious 540, Commercial 153, Castles 85, Civic 67 | High, curated, standalone by construction, part labels | 2,000 (1,424 houses) | Access by Google form; no licence text found on the site or in the paper. Underlying 3D Warehouse ToS forbids "aggregation" and redistribution → treat as **research / eval only** | One zip after approval |
-| **PLATEAU (Japan)** | Government LoD2 city models, ~210 municipalities, subset textured from oblique aerial imagery | Millions of real buildings, all types; Tokyo LoD2 textured in places | Real roof geometry, real facade colours at aerial-texture resolution; **no window/door geometry** | Very large; needs splitting per building (CityGML already does) | **CC BY 4.0**, commercial use allowed | CityGML per municipality (also OBJ/FBX); textured subsets are separate downloads |
-| **Berlin 3D** | City-wide textured LoD2 CityGML | ~all Berlin buildings | Textured LoD2, no openings | large | dl-de/zero-2.0 per GovData listing | Per-district CityGML + texture packs |
-| **Helsinki 3D** | Textured LoD2 CityGML + photogrammetric reality mesh | city | Textured LoD2 | large | CC BY 4.0 | CityGML per 4 km² sheet, OBJ |
-| **3D BAG (Netherlands)** | LoD2.2 auto-reconstructed from LiDAR + footprints | ~10M buildings, mostly terraced | **Untextured** massing with real roof shapes | 10M | CC BY 4.0 | CityJSON / OBJ / GPKG tiles |
-| **Building3D (Estonia)** | LiDAR + roof wireframes + meshes, 160k buildings, 16 cities | many | Untextured roofs/massing | 160k | **CC BY-NC-SA 4.0** → non-commercial | website |
-| **BuildingWorld (AAAI 2026)** | 5M LoD2 models from 44 cities on five continents | many | Untextured | 5M | Not stated; public release not confirmed | Not confirmed |
-| **ArchiSet (ICCV 2025)** | 13,728 "real-world architectural design" building forms as point clouds / voxels / meshes + window-to-wall ratio | design massing | Untextured massing + window masks | 13.7k | Not located; no download page found | Not located |
-| **ShapeNet** | 55 object categories | **none** — ShapeNetCore has no building category | — | 0 | — | — |
-| **3D-FRONT** | 18,968 furnished *indoor* rooms, 13k furniture models | **none** — no facades, roofs or exteriors | — | 0 | — | — |
-
-Two candidates from the request are therefore out: ShapeNet has no buildings at all, and
-3D-FRONT is interiors only. Objaverse's LVIS labels are also useless for this — the
-1,156 LVIS categories contain no `house` or `building` class (the nearest are `windmill`
-112, `dollhouse` 56, `birdhouse` 50, `clock_tower` 49), so the filter has to be
-caption/tag based, which is what the measured numbers above use.
-
-### 1.2 Recommendation
-
-**Primary: Objaverse 1.0 Sketchfab objects, filtered through TRELLIS-500K.** Three
-reasons beyond count and licence:
-
-- **It is the distribution TRELLIS was trained on.** TRELLIS-500K is Microsoft's own
-  curated training list (Objaverse-XL Sketchfab + GitHub, ABO, 3D-FUTURE, HSSD, Toys4k,
-  filtered by aesthetic score). Buildings that TRELLIS learned from are the buildings it
-  reconstructs best, so a model trained on them sees the same kind of geometry at
-  inference.
-- **Per-object licence in metadata**, so a licence policy is a filter, not a research job.
-- **Real architecture, real materials.** The captions read like the brief: "two-story house
-  with a light tan gable roof, light brown walls with dark brown beams, white-framed
-  windows, a verandah…". Photogrammetry scans of real houses are in there too.
-
-**Filter recipe** (all deterministic, all recorded per object in the dataset index):
-
-1. Start from `ObjaverseXL_sketchfab.csv` (TRELLIS-500K): has `sha256`,
-   `file_identifier`, `aesthetic_score`, `captions`.
-2. Caption regex for building nouns (house, cottage, cabin, villa, townhouse, apartment,
-   church, castle, tower, barn, lighthouse, …) **and** Sketchfab category `architecture`
-   or a building tag from the Objaverse 1.0 metadata shards.
-3. Reject if caption/name/tags match `minecraft|voxel|blocky|lego|pixel|low.?poly|isometric`
-   — the dataset must not contain things that are already block-shaped.
-4. Licence ∈ {`cc0`, `by`} (add `by-sa` if a share-alike derivative dataset is acceptable;
-   exclude `by-nc*` unless the product is definitely non-commercial — Decision 2).
-5. Objaverse++ flags (ODC-By, on Hugging Face): quality ≥ Medium, `not_single_object` = no,
-   `scene` = no, `transparent` = no.
-6. Geometry sanity after download: 1k ≤ faces ≤ 2M (decimate above 150k), bounding box
-   aspect within the library's range (footprint aspect p10 1.06 / p90 1.83; height ≤ 3×
-   min footprint side for houses, allow more for towers), `yaw_align.estimate_yaw`
-   wall-area fraction ≥ 0.2 (a building has walls), one dominant connected component
-   after voxelisation (≥ 80% of solid volume, the same idea as `house_stats`'s
-   `MIN_COMPONENT_SHARE`), and no ground plane larger than the building footprint (crop
-   plots off with the same "trim to the build" logic as `VoxelWorld.auto_bbox`).
-7. Keep an index row per object: uid, sha256, licence, author, aesthetic score, caption,
-   filter outcomes, generation seeds. That is the dataset's provenance and its ablation
-   handle.
-
-Expected yield: **8–15k buildings**, of which roughly half are houses. Raw download
-≈ 100–165 GB streamed; retained voxel pairs ≈ 0.3–0.6 MB each → **5–10 GB on disk**.
-
-**Secondary (phase 2, optional): textured city LoD2 (PLATEAU, Berlin, Helsinki).** Real
-roof geometry at real-world scale in metres for millions of ordinary buildings, and real
-facade colours — but no window or door geometry, so their targets need the
-"openings from texture" rule in 2.3 and they should be a separate domain flag in the index.
-Their absolute scale is the one thing Objaverse lacks, which makes them the right place to
-calibrate blocks-per-metre later.
-
-**Eval only: BuildingNet**, if the access form is granted and the project stays
-non-commercial. Its part labels (window, door, roof) are the only ground truth available
-for checking the palette rules, but its 3D Warehouse origin makes it unsafe as training
-data for anything you might ship.
-
-**Not recommended:** Objaverse-XL GitHub subset (no licences), Building3D (NC-SA),
-BuildingWorld and ArchiSet (not verifiably available, untextured).
-
----
-
-## 2. Voxeliser and palette design
-
-### 2.1 Frames and scale
-
-- **Axes.** TRELLIS exports Y-up (`to_glb` rotates z-up → y-up). `Real2Minecraft` grids are
-  `(W, H, L)` = `(x, y, z)`; this repo's `schem_voxels.VoxelGrid`, `schem_write` and
-  `VoxelWorld.extract_region` use Sponge order `(H, L, W)` = `(y, z, x)`. One transpose,
-  `grid_yzx = grid_xyz.transpose(1, 2, 0)`, and every tool here (thumbnails, Inspect,
-  `contact_sheet`, `house_stats`) works on the generated targets unchanged.
-- **Scale.** Objaverse meshes have no trustworthy units and TRELLIS output is
-  unit-normalised, so blocks-per-metre cannot be measured on the input. Instead **sample
-  the target size from the real library**: longest horizontal axis drawn from the measured
-  footprint distribution (p10 16 / median 26 / p90 46 blocks, max 92) with the same
-  clipping `house_params` applies, and generate each source mesh at **two or three sizes**
-  so the model learns scale invariance. At inference the size is the user's slider, as in
-  `Real2Minecraft` (`VOXEL_MIN_BLOCKS` 16 … `VOXEL_MAX_BLOCKS` 128). Decision 3 fixes the
-  envelope.
-- **Alignment.** `mesh_normalize.normalize_mesh` (ground at y=0, XZ centre) then
-  `yaw_align.estimate_yaw` so facades sit on the grid — the same two calls the inference
-  path already makes, which is what keeps training and inference in one frame.
-
-### 2.2 Geometry: mesh → solid voxels → shapes (existing code, three changes)
-
-The pipeline is `Real2Minecraft`'s, run offline:
-
-```
-glb ──► normalize + yaw ──► scale longest axis to N blocks
-    ──► _voxelize_surface_sat (gap-free surface)
-    ──► exterior flood fill + _clean_voxels (solid, leak-guarded)
-    ──► classify_shapes on a 4x finer grid ──► full / slab(top,bottom) / stairs(4 facings)
-```
-
-Changes needed for bulk use:
-
-1. **Pre-decimate.** `_voxelize_surface_sat` loops over triangles in Python; at the
-   Objaverse median (18k faces) it is seconds, at p90 (916k) it is minutes. Decimate to
-   ≤150k faces before SAT (trimesh's quadric decimation needs the `fast-simplification`
-   package). Budget: ~30 s per mesh per size → 15k meshes × 2 sizes ≈ 10 CPU-days single
-   core, ≈ 1.5 days on the 12900K's 8 P-cores.
-2. **Leak policy.** `classify_shapes` returns `None` when the fine flood leaks (non-
-   watertight mesh) and everything becomes full cubes. For a *training target* that is a
-   corrupt label, not a fallback: mark the sample `leaked` in the index and drop it.
-3. **Plot removal.** Many Sketchfab houses sit on a lawn/plinth slab. Detect a flat
-   bottom layer whose footprint exceeds the walls' footprint by > 15% and cut it, the way
-   `house_stats` finds the pad; record `had_plot`.
-
-### 2.3 Colour and material → blockstate (existing matching + new privileged rules)
-
-The existing chain is `_sample_voxel_colors_texture` → `_quantize_colors` →
-`match_blocks` (weighted LAB, `L_WEIGHT` 0.65) → `apply_shapes` (`BLOCK_VARIANTS` for the
-slab/stair variant, nearest variant-capable material otherwise). Keep it as the *default*
-assignment. Add rules that use information only the clean source mesh has — this is what
-makes the target richer than anything computable from the TRELLIS input:
-
-| Rule | Signal on the clean mesh | Target |
+| # | Decision | What it changed |
 | --- | --- | --- |
-| Windows | glTF material `alphaMode` BLEND/MASK, `baseColorFactor` alpha < 1, or material/mesh name matching `glass|window|pane` | `AUX_PALETTE` glass (colour-matched), full cube in v1 |
-| Doors | material/mesh name `door`; else a ground-touching opening 1–2 wide, 2–3 tall, in a wall cell | `minecraft:<wood>_door[half=…]` (v2), wood plank cube (v1) |
-| Roof vs wall | face normal `|n_y|` > 0.35 and above the top storey line (the `voxel_sampling` UP/SIDE buckets already exist) | roof voxels are matched against the *stair-capable* subset so slopes always become stairs/slabs of one material; walls against the full palette |
-| Trim / frames | a thin (≤ 1 voxel) colour region that outlines a window or a corner | keep as its own material (do **not** let `_quantize_colors` absorb it) — this reproduces the accent behaviour `house_grammar` had to fake |
-| Ground contact | the bottom course | matched against stone/brick families (foundation), mirroring `house_stats`'s "foundation" material |
-
-Two consistency items with this repo:
-
-- `block_roles.stairs_for/slab_for` and `Real2Minecraft.block_shapes.BLOCK_VARIANTS` are
-  the same table written twice (and `block_roles` also knows `pale_oak`, tuff bricks and
-  deepslate tiles). Unify into one and have both import it.
-- `block_colors.py` (thumbnail colours) and `block_palette.BLOCK_PALETTE` (matching
-  colours) disagree by a few units per block (stone 125 vs 126). Harmless for thumbnails;
-  for matching, derive `BLOCK_PALETTE` from real texture averages once (a resource pack
-  dropped into `Real2Minecraft/textures/blocks/` is already supported by
-  `block_textures.get_tile`).
-
-**Vocabulary.** Measured over the 106 real builds (1.53M non-air blocks): 4,228 distinct
-blockstates and 795 base blocks, but the top-100 base blocks cover 88% of volume and the
-top-200 cover 96%. Of the *structural* blocks (terrain and plants removed): 60% full
-cubes, 16% stairs, 11% slabs, 13% other non-cube (panes, fences, doors, trapdoors). So the
-target vocabulary is **material × shape**, factored:
-
-- **materials**: ~128 = `BLOCK_PALETTE` (113) + `AUX_PALETTE` glass (9) + a handful the
-  library uses heavily that the palette lacks (`quartz_pillar`, `bone_block`,
-  `white_concrete_powder`, `stripped_*_log`) — final list chosen by library frequency,
-  frozen in `vocab.json`.
-- **shapes**: 8 = air, full, slab-bottom, slab-top, stairs N/E/S/W (v1). Panes, fences,
-  doors, trapdoors are v2 (Decision 4).
-
-### 2.4 The input side: making the source mesh look like TRELLIS output (Decision 1)
-
-Calibrate every parameter below against the 228 cached real TRELLIS outputs in
-`Real2Minecraft/outputs/trellis/` (face count after 0.9 simplify, curvature, texture
-frequency content, seam and hallucination statistics). Apply to the *clean* mesh, in this
-order, with a per-sample seed recorded in the manifest:
-
-1. **Remesh + simplify** to a TRELLIS-like face budget (uniform remesh, then decimate to
-   5–30k faces), so sharp corners round off the way they do in TRELLIS.
-2. **Taubin smoothing** (1–3 iterations) — TRELLIS meshes are blobby; measure the amount.
-3. **Thin-feature loss**: drop or fatten geometry thinner than ~0.6 voxel at the target
-   size (railings, mullions, eaves edges), which TRELLIS reliably loses.
-4. **Texture re-bake at 1024²** with low-pass filtering, a global tone shift (TRELLIS bakes
-   are darker), baked-lighting gradients (top bright, underside dark — exactly what
-   `color_quantize`'s shadow stage repairs), and seam noise.
-5. **Unseen-side hallucination**: pick a random photo azimuth; faces facing away get
-   blurred, desaturated and partly recoloured from a *mirror* of the seen side — this is
-   what `color_repair` fights at inference and the model should learn to see through it.
-6. **Pose jitter**: yaw ±3° (yaw_align residual), scale ±5%, XZ offset ±0.5 block.
-7. Then run the **same** `normalize → yaw → SAT → flood` on the degraded mesh at the same
-   target size to produce the input tensors.
-
-**Optional but recommended calibration subset:** render 300–500 source meshes to a
-photo-like image (Blender/Cycles with a sky HDRI, or the same AI-photo step the manual
-pipeline uses) and push them through the local TRELLIS server with
-`trellis_client._run_trellis_api`. At 1–2 min per run on the 4060 Ti that is ~10 GPU
-hours, and it gives real TRELLIS inputs paired with clean targets: a validation set that
-tells you whether the synthetic degradation is realistic, and a way to tune it. Doing this
-for the *whole* dataset (15k × 1.5 min ≈ 16 GPU-days) is possible but should wait until
-the synthetic degradation is shown insufficient.
-
-### 2.5 Writing a pair
-
-- **Target**: `schem_write.write_schem(grid_yzx, names, path, metadata=…)` from this repo.
-  It is deterministic (sorted palette, `mtime=0`), re-densifies the palette, and stamps
-  provenance into `Metadata` — so every generated `.schem` carries `source_dataset`, `uid`,
-  `sha256`, `licence`, `author`, `target_size`, `degrade_seed`, `pipeline_version`, and
-  can be dropped into the library's importer unchanged for inspection.
-- **Input**: `input.npz` — `occ` uint8 `(H,L,W)`, `rgb` uint8 `(3,H,L,W)`, `normal` int8
-  `(3,H,L,W)` (surface voxels only; optional), plus `origin`, `scale`, `yaw_deg`.
-- **Target cache**: `target.npz` — `shape` uint8, `material` uint16 (indices into
-  `vocab.json`), derived from the `.schem` by `schem_voxels.load_voxels` + a vocab mapper,
-  so the `.schem` stays the single canonical target.
-- `manifest.json` per sample (index row + timings + QA results), `preview.png` from
-  `thumbs.render_schem` next to the input rendered with `thumbs.render_mesh` — the same
-  shared camera the Library uses to spot mismatched pairs at a glance.
-
-### 2.6 QA on every sample (reuse `gen_houses.validate`)
-
-`schem_convert.inspect` on the written file, decode it back, compare block-for-block;
-then the geometry gate: solid fraction inside the library's measured density range
-(0.04–0.55), a roof covering ≥ 80% of the footprint, stair share of the roof band within
-the library's range, one dominant component. Failures are kept in the index with a reason
-(as `house_stats` does), never silently dropped. A `contact_sheet.py` sheet per 100
-samples is the human review surface.
+| 1 | Moderately messy, TRELLIS-like inputs; clean targets | Degradation reproduces TRELLIS's measured imperfections (section 7), calibrated on real TRELLIS output. |
+| 2 | Permissive licences; flag restrictions; document before downloading | Licence register per use (training, derived data, code, examples, model). Pilot restricted to CC0 + CC BY. |
+| 3 | Any building size; chunked processing; 64³ first, test 96³/128³ | Windowed inference with blended reassembly; GPU benchmark at all three sizes (section 5). |
+| 4 | Shared package extracted from Real2Minecraft | `mcvoxel` created with `git mv`; reuse, modification and gaps listed in section 3. |
+| 5 | Real builds measure the gap; do not assume a 30/50 split | Library inspected; evaluation-only recommendation from the numbers (section 4). |
+| 6 | Diversity is a core requirement | Taxonomy of 14 categories; pilot quotas put suburban houses at 6 of 200. |
+| 7 | Mesh → blocks with block type, orientation, slabs, stairs | Target vocabulary is material × shape including stair facing (section 5.1). |
+| 8 | Treat the synthetic→real gap as something to measure | Evaluation protocol on real builds (section 4.4); the first measurable gap (stairs) already found (section 6.3). |
 
 ---
 
-## 3. Model and training-data format
+## 2. Source datasets, re-evaluated for architectural diversity
 
-### 3.1 Task
+### 2.1 Objaverse 1.0, measured from metadata
 
-Dense voxel-to-voxel translation at one fixed resolution: input channels from 2.5,
-output two categorical maps (shape, material) over the same grid. Air is a shape class,
-so occupancy is predicted too — which lets the model *sharpen* blobby TRELLIS geometry
-into block-aligned walls and roofs, not only recolour it. Facing is part of the shape
-class rather than a separate head so a stair can never be emitted without a direction.
+All 160 metadata shards (798,759 objects) were classified from TRELLIS-500K render captions
+(or name and tags when there is no caption) into 14 categories. The rule reads the
+caption's **head phrase** — "A two-story brick house with a garage" is a house — and rejects
+objects whose head noun is not a building ("A school desk…", "An SUV with a bull bar…").
+Rejection funnel over 40,437 candidates:
 
-### 3.2 Architecture (right-sized for one 16 GB GPU)
+| Reason | Objects |
+| --- | --- |
+| **Passes (pool)** | **21,584** |
+| Stylised / cartoon / fantasy (text or Objaverse++ style) | 4,960 |
+| Furnished interior | 2,310 |
+| Low Objaverse++ quality (< 2 of 3) | 2,217 |
+| Scene (city, street, diorama) | 2,148 |
+| Object, not building | 1,211 |
+| Too few faces | 1,044 |
+| Several buildings | 791 |
+| Interior view | 744 |
+| Voxel / Minecraft / LEGO in text | 713 |
+| Ruin | 648 |
+| Rip of a commercial game asset | 594 |
+| Other (animated, toy, unfinished, cutaway, part) | 1,473 |
 
-**3D residual U-Net**, 4 levels, base width 32 (32/64/128/256), GroupNorm, two 1×1×1
-heads. About 6–8M parameters. Trained on random **64³ crops** in bf16 with batch 8:
-~9–11 GB VRAM, ~0.7 s/iteration on the 4060 Ti; 100k iterations ≈ 20 hours. Inference
-runs the full build with a sliding 64³ window (overlap 16, blended logits), so builds up
-to the 128-block slider limit cost well under a second.
+Objaverse++ marks most buildings-on-a-plot as "scene" or "multi-object". A hand sample
+showed they are usually one building with a garden, pool or cars, so those flags **mark**
+an object (`pool_kind = plot`) instead of rejecting it; the voxeliser removes the plot.
 
-Why not the alternatives:
+### 2.2 Coverage and quality by category (permissive licences only)
 
-- **Sparse convolutions** (MinkowskiEngine, torchsparse) halve memory but are painful to
-  build on Windows; at 64³ crops density is not the bottleneck.
-- **Transformer over sparse voxels / TRELLIS-style SLat**: far more data-hungry than 15k
-  samples justify; a U-Net's locality prior is the right bias for "stairs follow the slope".
-- **Diffusion**: only worth it if the mapping is genuinely multi-modal (several valid
-  roofs for one blob). Start deterministic; the eval set will show whether the
-  predictions look averaged.
+Precision = share of a random sample of about 20 per category that I judged, from the
+caption and thumbnail, to be one real building (rounded; not checked for pavilion and office).
 
-### 3.3 Training data format
+| Category | CC0 + CC BY | With caption | Precision | Scan share | Median faces | Median GLB |
+| --- | --- | --- | --- | --- | --- | --- |
+| House | 4,649 | 2,750 | ~100% | 16% | 209k | 16.7 MB |
+| Generic building | 3,281 | 2,399 | ~100% | 20% | 112k | 13.2 MB |
+| Religious | 1,520 | 583 | ~85% | 64% | 205k | 26.3 MB |
+| Institutional | 1,047 | 77 | ~75% | 53% | 226k | 24.4 MB |
+| Tower | 981 | 641 | ~85% | 35% | 40k | 10.1 MB |
+| Fortification | 769 | 350 | ~75% | 59% | 211k | 25.5 MB |
+| Industrial | 722 | 307 | ~90% | 33% | 52k | 14.7 MB |
+| Mid-rise (generic, 4–14 storeys) | 645 | 644 | ~100% | 12% | 159k | 14.6 MB |
+| Commercial | 551 | 115 | ~90% | 33% | 77k | 11.4 MB |
+| **Skyscraper** | **241** | 188 | ~100% | 14% | 48k | 4.4 MB |
+| **Apartment** | **190** | 102 | ~90% | 13% | 336k | 22.5 MB |
+| Pavilion | 144 | 92 | — | 23% | 46k | 8.9 MB |
+| **Townhouse** | **34** | 8 | ~100% | 23% | 95k | 15.6 MB |
+| **Office** | **30** | 12 | — | 24% | 137k | 9.7 MB |
 
+Findings that matter for diversity:
+
+- **Multi-family, office and high-rise are thin.** Townhouses (34), offices (30),
+  apartments (190) and skyscrapers (241) are two orders of magnitude below houses. The
+  645 generic mid-rises are mostly apartment and office blocks without the word in the
+  caption.
+- **One uploader is 25% of the whole pool.** `homedesign3d` contributes 5,458 objects, all
+  CC BY-NC-SA and nearly all houses on landscaped plots. The licence policy excludes them;
+  so would any diversity cap.
+- **Institutional, religious and fortification lean on scans** (53–64%), and in the pilot
+  scans were junk 6 times in 11.
+
+### 2.3 Second source for real-scale, multi-family and high-rise geometry
+
+**Berlin LoD2** (verified on tile `LoD2_392_5820`): about 925 CityGML tiles under
+Datenlizenz Deutschland – Zero 2.0 (no conditions at all), with a cadastral
+**building-use code** per building, roof-type codes and a measured height in metres. No
+textures and no windows or doors. It is the natural source for
+apartment blocks, offices and towers at real scale as **geometry-only** samples: the shape
+loss applies, the material loss is masked. Not implemented yet (a CityGML reader is the
+missing piece) — Decision D7.
+
+Others considered: 3D BAG (CC BY 4.0, untextured, no use labels), Helsinki (CC BY 4.0,
+textured), PLATEAU (PDL 1.0 plus a Surveying Act caveat to check per dataset). Rejected:
+ShapeNet (no buildings), 3D-FRONT (interiors only), Objaverse-XL GitHub (no per-object
+licences), BuildingNet (3D Warehouse origin, no licence text), Building3D (NC-SA),
+BuildingWorld and ArchiSet (not available).
+
+### 2.4 Recommendation
+
+Objaverse 1.0 (CC0 + CC BY) as the primary textured source, **with category quotas**, not
+proportional sampling; Berlin LoD2 as a geometry-only second source for multi-family and
+high-rise at real scale.
+
+---
+
+## 3. The shared package: `mcvoxel`
+
+### 3.1 What moved, what changed, what is new
+
+The package lives at `Real2Minecraft/mcvoxel/` (installable via its `pyproject.toml`,
+which exposes only `mcvoxel`) and is installed editable here through
+`requirements-synth.txt`. The move used `git mv`, so file history follows.
+
+| Module | Origin | Status |
+| --- | --- | --- |
+| `voxelize` | R2M | **Reused**; loop rasteriser replaced by `raster` (identical output); `_clean_voxels` gained an opt-in `pad_border` |
+| `voxel_sampling` | R2M | **Modified**: general `sample_voxel_surface` for any colour source, per-voxel material tallies, occupied-voxel accumulation, chunked batches. The single-texture function is now a thin wrapper with bit-identical output. |
+| `block_shapes` | R2M | **Modified**: vectorised `octant_counts` (identical output) |
+| `block_palette`, `color_quantize`, `color_repair`, `mesh_normalize`, `schematic` | R2M | **Reused unchanged** |
+| `yaw_align` | R2M `building/` | **Reused**; default parameters added |
+| `raster` | new | Vectorised surface rasteriser with explicit grid frame; 30–110× faster than the loop |
+| `scene` | new | Multi-material GLB loader: per-face material, glass/door kinds |
+| `grid` | new | Scene → voxel model at any size: explicit scale and frame, ground plate removal, enclosure of leaky interiors, per-voxel shape classification in chunks, visible shell |
+| `assign` | new | Deterministic blocks for a target: R2M's colour chain plus glass and door rules |
+| `vocab` | new | Factored vocabulary (8 shapes × 120 materials), encode/decode |
+| `blockstates` | new | Rotation/mirror with stair-facing remap; the game's stair-corner rule |
+| `tiling` | new | Windowed inference and blended reassembly |
+
+**Verification.** After every change, Real2Minecraft's building-mode golden
+(`dev_building.py --golden check`, 45 files) stayed clean and sculpture-mode voxelisation
+of six cached TRELLIS meshes in both colour modes (12 cases) stayed **bit-identical**. As a
+side effect those 12 voxelisations dropped from 4 min 36 s to 21 s of wall time. `Real2Minecraft/tests/`
+holds 18 tests for the package.
+
+### 3.2 Findings about the existing code
+
+- **`_clean_voxels` strips the outermost layer of every grid.** scipy's `binary_closing`
+  treats outside the array as empty, so erosion removes solid voxels on the boundary: a
+  solid 6³ cube comes back as 4³. Real2Minecraft's grids are the mesh's own bounding box,
+  so every sculpture build loses its outer layer on all six sides and those surfaces fall
+  back to closest-point colours. Not changed in Real2Minecraft (it would change the app's
+  output and golden); the dataset pipeline passes `pad_border=True`. Decision D11.
+- **Stair facing is now verified.** Real2Minecraft's notes said facing was never checked
+  in a real paste. In the 106 real builds, for 42,233 bottom-half stairs, the block one up
+  and one toward `facing` is solid 84.0% of the time, and one up and away 5.0%: `facing`
+  names the high side, which is what the classifier emits.
+- **Thin-plane models need two new rules.** Architectural models often have zero-thickness
+  roofs, open bottoms and glassless windows. The global fine flood leaked under such roofs
+  and turned them into slabs, so inside/outside is now decided per voxel from its own
+  air-facing sides; and empty voxels covered from above and from four of five other
+  directions count as enclosed (rooms yes, courtyards and porches no).
+- **Real2Minecraft has no git remote.** The Mac cannot install `mcvoxel` until it has the
+  folder. Decision D10.
+
+---
+
+## 4. The real Minecraft library
+
+### 4.1 What exists
+
+| Measure | Value |
+| --- | --- |
+| Real builds (synthetic grammar houses excluded) | 106 |
+| With a TRELLIS mesh or AI-generated image | **0** |
+| With at least one screenshot | 106 (102 with one, 4 with two) |
+| Independent sources ("families": same author or pack) | **64** (13 multi-member families hold 55 builds) |
+| Byte-identical duplicates | 1 pair (`7__grannitlune`, `81__grannitlune-1`) |
+| With a recorded source URL | 1, and it is PlanetMinecraft's front page |
+
+By category, from renders of all 106:
+
+| Category | Builds | Independent sources |
+| --- | --- | --- |
+| Detached house (suburban, modern, mansion) | 83 | 49 |
+| Rustic, medieval, cabin, village | 14 | 9 |
+| Urban townhouse / row | 7 | 4 |
+| Commercial | 2 | 2 |
+| Apartment, office, tower, skyscraper, civic, religious, industrial | **0** | **0** |
+
+### 4.2 Convertibility
+
+Every build has the screenshot the AI-photo step starts from, but the screenshots are
+source-site images of mixed usefulness (in a random sample of eight: four clear full views, two of them with a
+neighbouring build at the edge; three partly hidden by trees or taken from far away; one
+web capture with a title across it). The
+app's own Inspect render is a usable fallback for any build. 17 builds carry analyser
+flags (12 terrain taper, 4 deep terrain, 1 floating gap) and should be cropped before capture.
+None has been converted, so conversion success is unmeasured; each conversion costs one
+manual AI photo plus a 1–2 minute TRELLIS run.
+
+### 4.3 Recommended split: evaluation only
+
+The collection is better suited to evaluation than to fine-tuning:
+
+1. **No pairs exist**, so any split is future manual work.
+2. **It is 78% detached houses** from 64 sources. Fine-tuning on it would pull a model meant
+   for all architecture toward suburban conventions — the opposite of Decision 5.
+3. **Its licences are unknown.** Keeping it out of training keeps a published model clean
+   of it (see the register).
+4. **It is the only way to measure the synthetic→real gap**, and only a held-out set does
+   that.
+
+Proposed **real-eval-v1**: one build per family, **64 builds** (64 manual conversions). If
+that is too much, the smallest useful set is every non-detached family (15) plus 20
+detached families stratified by roof type, storeys and size: **35 builds**. No fine-tuning
+pool for now; revisit only if the measured gap is large, and then with *new* builds.
+
+**Future data-collection gap:** the library has no real Minecraft build of an apartment
+block, office, tower, skyscraper, church, school or factory. Candidate sources, licences
+unchecked: BuildTheEarth (1:1 real buildings in Minecraft), PlanetMinecraft builds with an
+explicit licence, or your own builds.
+
+### 4.4 How the gap will be measured
+
+Each real build: register the TRELLIS mesh to the schem (yaw 0/90/180/270 ± 5°, XZ ± 3,
+scale ± 10%, maximising occupancy IoU); map its blocks into the vocabulary; score only the
+visible shell and outside air, ignoring terrain, plants and interior. Metrics: occupancy
+IoU, shape accuracy on the shell, material and material-family accuracy, plus the
+distribution checks `house_stats` already computes (roof type, storeys, stairs and slab
+share). The same metrics on held-out synthetic pairs give the gap directly.
+
+---
+
+## 5. Representation, large buildings and compute
+
+### 5.1 Target encoding
+
+- **Vocabulary:** 8 shapes (air, full, bottom slab, top slab, stairs facing E/W/N/S) × 120
+  materials (the 110-block palette, 9 glasses, air). Upside-down stairs, panes, fences,
+  doors and trapdoors are v2.
+- **Supervision:** the visible shell (solid voxels touching outside air) and outside air.
+  The interior gets an ignore label: Minecraft builds are hollow and a photo never shows
+  the inside. Interiors are a deterministic post-process (hollow, optional floor plates).
+- **Frame:** Sponge (Y, Z, X) arrays; 3 blocks of supervised air around the sides and top.
+  The degraded input is voxelised into the **same** frame, voxel for voxel.
+- **Scale:** from the caption's storey count when present, else the file's units if they
+  read plausibly as metres, else a category prior; 3–6 blocks per storey (3–4 is roughly
+  real scale, 5–6 is what the library's builders use). Pilot sources: 61 caption, 36 file
+  units, 69 priors.
+- **Neighbour-dependent states** (stair corners) are derived after assembly with the
+  game's own rule, never predicted.
+
+### 5.2 Buildings larger than the window
+
+Inference runs overlapping windows (`mcvoxel.tiling`): stride = window − overlap, last
+window snapped to the grid's end, each axis shorter than the window padded. Shape
+probabilities are blended with weights that ramp down across the overlap (flat at grid
+edges); material comes from the window that sees the voxel most centrally, so no 120-channel
+material accumulator is needed over a large grid. A test feeds deliberately corrupted predictions in a
+4-voxel band at every window edge and recovers the ground truth exactly. Memory for the
+shape accumulator is about 400 MB for a 256 × 384 × 256 box.
+
+Two limits to respect: Minecraft 1.18+ builds within 384 blocks of height, so the pilot
+caps height at 300 blocks; the pilot also caps footprint at 220 blocks (time, not memory).
+
+### 5.3 GPU benchmark (RTX 4060 Ti 16 GB)
+
+A throwaway 3D residual U-Net (7.2M parameters, 6 input channels, 8 + 120 outputs), bf16,
+forward + backward + AdamW:
+
+| Window | Batch | Checkpointing | Peak VRAM | Seconds / step |
+| --- | --- | --- | --- | --- |
+| 64³ | 8 | no | 7.7 GB | 0.42 |
+| 64³ | 16 | yes | 9.3 GB | 1.07 |
+| 96³ | 4 | no | 13.0 GB | 0.80 |
+| 96³ | 4 | yes | 7.9 GB | 0.84 |
+| 128³ | 1 | no | 7.7 GB | 0.42 |
+| 128³ | 2 | yes | 9.3 GB | 1.12 |
+
+Throughput is 4–5 million voxels per second at every size, so larger windows cost nothing
+per voxel; they buy context at the price of a smaller batch. Runs that peak above about
+15 GB spill into shared system memory and are 3–65× slower (64³ at batch 16 without
+checkpointing: 2.8 s per step instead of about 0.85). spconv 2.3.6 already works on this
+machine inside the TRELLIS environment, so a sparse model is an option later.
+
+---
+
+## 6. The pilot
+
+### 6.1 What ran
+
+200 objects chosen by `synth.select_pilot` with fixed quotas (detached houses 26, of which
+suburban 6; apartments 20; mid-rise 16; skyscrapers 20; offices 8; commercial 18;
+institutional 14; religious 18; towers 18; fortifications 12; industrial 10; townhouses 8;
+pavilions 6; generic 6), CC0 or CC BY only, at most two per author, at most 15% scans.
+Each object: download, orient, scale, voxelise the target, assign blocks, write and
+round-trip the `.schem`, degrade, voxelise the input in the same frame, record metrics.
+
+| Outcome | Objects |
+| --- | --- |
+| **Pairs written** | **166** |
+| Rejected: thin shell (open or paper-thin model) | 15 |
+| Rejected: flat site | 7 |
+| Rejected: scattered scene | 5 |
+| Rejected: already blocky source | 4 |
+| Rejected: fragmented | 3 |
+
+| Per pair | p10 | p50 | p90 | max |
+| --- | --- | --- | --- | --- |
+| Height, blocks | 12 | 26 | 77 | 190 |
+| Footprint, blocks | 17 | 36 | 89 | 212 |
+| Shell voxels | 262 | 1,631 | 11,010 | 51,598 |
+| Seconds (6 workers in parallel) | 5.2 | 10.1 | 28.2 | 53.7 |
+| KB on disk | 101 | 166 | 275 | 586 |
+| Input/target occupancy IoU | 0.59 | 0.79 | 0.88 | 0.96 |
+
+Glass: 67 sources had glass materials, 54 targets kept glass blocks.
+
+### 6.2 Hand audit
+
+I graded all 195 pre-gate targets from contact sheets (`visual_audit.json`); the gates then
+removed 14 junk, 8 flawed and 7 clean ones — 4 of those "clean" were blocky sources whose
+targets looked fine but whose inputs would break Decision 1's premise.
+
+| Category | Pairs | Clean | Flawed | Junk |
+| --- | --- | --- | --- | --- |
+| Skyscraper | 17 | 15 | 2 | 0 |
+| Office | 6 | 6 | 0 | 0 |
+| Mid-rise | 15 | 11 | 4 | 0 |
+| Apartment | 19 | 12 | 6 | 1 |
+| Institutional | 10 | 7 | 2 | 1 |
+| Pavilion | 5 | 4 | 1 | 0 |
+| Religious | 17 | 11 | 2 | 4 |
+| Tower | 16 | 8 | 2 | 6 |
+| Fortification | 9 | 3 | 2 | 4 |
+| Industrial | 7 | 3 | 2 | 2 |
+| Commercial | 12 | 2 | 2 | 8 |
+| Houses (4 subtypes) | 20 | 7 | 7 | 6 |
+| Townhouse | 7 | 3 | 2 | 2 |
+| Generic | 6 | 2 | 3 | 1 |
+| **All** | **166** | **94 (57%)** | **37 (22%)** | **35 (21%)** |
+
+What is left in the junk: small detailed objects (shops, sheds) drawn at 10–16 blocks
+become blobs; fantasy objects the text filters miss; roofless "dollhouse" models; scene
+clutter such as fenced plots.
+
+### 6.3 First measured gap: stairs
+
+| | Stairs | Slabs | Full |
+| --- | --- | --- | --- |
+| Pilot targets (supervised shell) | 1.5% | 19.6% | 78.9% |
+| Real builds (structural blocks) | 16.3% | 10.6% | ~60% |
+
+Geometry-derived targets use stairs only where a surface actually crosses a voxel as a
+45°-ish step; builders put stair courses on roofs of almost any pitch, and cover flat roofs
+with full blocks rather than half-block slabs. A model trained on these targets will
+under-use stairs. Decision D1.
+
+### 6.4 Automatic QA gates, evaluated against the audit
+
+Each gate on its own, over the 195 audited targets (49 junk, 45 flawed, 101 clean):
+
+| Gate | Junk caught | Flawed caught | Clean lost | Adopted |
+| --- | --- | --- | --- | --- |
+| Thin shell (interior share < 0.15) | 11 | 3 | 1 | yes |
+| Flat site (height / footprint < 0.2) | 5 | 4 | 1 | yes |
+| Fragmented (largest part < 85%) | 3 | 2 | 2 | yes |
+| Already blocky (vertex lattice ≥ 0.5) | 0 | 0 | 4 (blocky sources) | yes |
+| Roofless (roof coverage < 0.5) | 33 | 22 | **31** | no |
+| Too small (footprint < 16) | 16 | 12 | **16** | no |
+
+Applied together in the v0.3 run (a pair is rejected at its first failed gate), the adopted
+four removed 14 junk, 8 flawed and 7 clean targets, 4 of the clean ones being blocky
+sources.
+
+The blocky detector (`synth.blockiness`) catches what text cannot: a Minecraft-built
+"Cathedral" passed every text rule. Ordinary sources score ≤ 0.023 at the 97th
+percentile; the four flagged score 0.66–1.0. Remaining junk needs a different signal — an
+image classifier on the Sketchfab thumbnails is the obvious one (Decision D2).
+
+### 6.5 Cost of the full run, extrapolated
+
+| | Pilot | 15,000 objects |
+| --- | --- | --- |
+| Wall time (6 workers) | ~8 min | ~12 h |
+| Pairs on disk (with previews) | 37 MB | ~3 GB |
+| Downloads (streamed, deleted after) | 2.0 GB | ~150 GB transient |
+
+---
+
+### 6.6 Pilot v2 (2026-09-25): the V1 pipeline
+
+200 assets, same quota idea with civic split out (residential 54, of which suburban houses 6),
+photogrammetry excluded, 1:1 scale, builder roofs, the fixed voxeliser. 185 of the 200 GLBs
+were already on disk from pilot v1 (only 113 MB downloaded); about 8 minutes on 6 workers.
+Full numbers: `data/synthetic/pilot-v2/report.md`.
+
+| Outcome | Assets |
+| --- | ---: |
+| **Pairs written** | **120** |
+| too_small at 1:1 (footprint and height both under 16) | 44 |
+| thin_shell | 11 |
+| scan_geometry (dense mesh, no planar faces) | 7 |
+| blocky_geometry (already voxels) | 5 |
+| scattered / fragmented / flat_site | 4 / 3 / 3 |
+| too_tall (> 300 blocks) / too_large | 2 / 1 |
+
+* **Diversity held.** Pairs by group: residential 25% (detached houses 9%), high-rise 12%,
+  religious 10%, mid-rise 10%, commercial, tower and fortification 8% each, institutional 7%,
+  industrial 4%, civic 3%. The losses to `too_small` fall mostly on commercial (8 of 24),
+  industrial (6 of 12) and residential (14 of 54): at 1:1 many kiosks, sheds and cottages are
+  under 16 blocks. The tall exception kept 9 slender buildings (towers, a lighthouse, a water
+  tower, a narrow office block).
+* **Size at 1:1.** Footprint p10/p50/p90 17 / 31 / 92 blocks (max 186); height 10 / 21 / 107
+  (max 260). 72% of pairs fit one 64^3 window; the largest needs 16 tiles.
+* **Scale sources.** File units 85 (23 of them agreeing with caption storeys), caption storeys
+  17, category prior 18. Confidence: high 23, medium 56, low 41.
+* **Roofs.** On evenly pitched roof columns, the share capped with stairs: real builds 96.7%;
+  builder targets 50.1% on houses (33.7% overall); geometric targets 25.9% on houses (8.2%
+  overall). Builder stairs face up-slope 93–98% of the time. The rest of the gap is mostly
+  columns the roof pass leaves alone (thin edges, glass) and non-roof steps (setbacks).
+* **Visual audit** (mine, from the contact sheets, approximate): about 70 good, 30 flawed,
+  20 garbage of 120 (58 / 25 / 17%). Garbage causes: buildings on raised or round plots
+  (islands, beaches, moats, desert discs) that ground-plate removal cannot strip; roofless,
+  cutaway and floor-plan models; a misclassified object (a cinema armchair) and a flagpole;
+  one cartoon church. Flaws: gardens, pools and trees kept; dark curtain walls without glass;
+  thatch roofs taking the colour of beams; about five scale errors (landmarks, a 17 m
+  cathedral, a 107 m village church).
+* **Cost.** 7.5 s per asset (p50), training files 14 KB per pair; review renders are 94% of
+  the 100 MB (configurable: `cfg.renders`).
+
+## 7. Degrading the input like TRELLIS
+
+The input is not arbitrary noise. Each step reproduces a known TRELLIS property
+(`synth/degrade.py`):
+
+- **Resolution bottleneck** — TRELLIS works in a 64³ structure normalised to the object's
+  longest axis, so detail is lost *relative to size*. The clean model is voxelised at
+  96–160 cells across, blurred and re-extracted with marching cubes.
+- **Surface noise** ("melted" buildings), **holes and floaters**.
+- **Baked colour** — darker, lit from a random sun, hue-drifted, noisy.
+- **Hallucinated unseen side** — surfaces facing away from a random camera blend toward the
+  mirrored visible side, darker, sometimes tinted wrong.
+
+Calibration against the 54 cached TRELLIS meshes, each voxelised at 32, 48 and 64 blocks
+(162 samples), with the pilot inputs voxelised the same way (p10 / p50 / p90; v0.1 is the
+195 pre-gate inputs, v0.2 the 166 current ones):
+
+| Statistic | TRELLIS | Pilot v0.1 | Pilot v0.2 (current) |
+| --- | --- | --- | --- |
+| Fill gain | 1.5 / 2.7 / 4.5 | 1.1 / 2.1 / 4.4 | 1.2 / 2.1 / 4.6 |
+| Blobby shell (3+ open faces) | .03 / .07 / .17 | .05 / .12 / .22 | .04 / .10 / .20 |
+| Brightness L* | 10 / 22 / 29 | 12 / 25 / 42 | 9 / 19 / 33 |
+| Colourfulness C* | 3.3 / 6.8 / 11.6 | 1.4 / 7.2 / 19.6 | 1.2 / 4.5 / 13.5 |
+| Neighbour ΔE | 3.1 / 4.9 / 9.1 | 1.8 / 4.3 / 8.6 | 1.5 / 3.4 / 6.3 |
+
+v0.2 tightened brightness, saturation and roughness; median colourfulness and colour noise
+are now slightly *below* TRELLIS. The reference set is small (54 meshes, not all
+buildings), which is one more reason for the real-TRELLIS calibration subset below.
+
+---
+
+## 8. Model and training (unchanged in outline; nothing implemented)
+
+- Dense 3D residual U-Net, 64³ windows to start (batch 8), 96³ as the first upgrade; two
+  heads (shape, material); inputs: occupancy, surface flag, RGB, height.
+- Loss: class-weighted shape cross-entropy, material cross-entropy on supervised solid
+  voxels, ignore label on interiors, material loss masked for geometry-only (LoD2)
+  samples.
+- Augmentation: 90° rotations and mirrors through `blockstates.rotate_y` / `mirror_x`, so
+  stair facings stay correct.
+- Material consistency across windows on large buildings: a global colour descriptor as a
+  conditioning input, plus region-level material voting after assembly.
+- Splits by source author. The real set is never trained on (section 4.3).
+- Recommended before training: 300–500 pilot sources rendered and run through real TRELLIS
+  (~10 GPU-hours) as a validation set of genuine TRELLIS inputs with clean targets.
+
+---
+
+## 9. Decisions (V1, answered 2026-09-25)
+
+| # | Question | V1 decision | Where it lives |
+| --- | --- | --- | --- |
+| D1 | Roof targets | Builder-style roofs (Approach B) are the primary target; the geometric conversion (A) is stored beside it for comparison | `mcvoxel.roofs`, `cfg.roof_style`, `cfg.store_geometric` |
+| D2 | Junk | Deterministic metadata and geometry filters first, every rejection recorded; a learned classifier only as a hook | `synth.filters` (`CLASSIFIERS` empty: TODO) |
+| D3 | Scans | Photogrammetry excluded from V1 | `cfg.exclude_photogrammetry`: text + Objaverse++ + a geometric scan check |
+| D4 | Minimum size | ~16 blocks of footprint after 1:1 scaling, configurable; small assets rejected, not rescaled | `cfg.min_footprint_blocks` (+ tall exception, see below) |
+| D5 | Scale | 1:1 with the player; real proportions; bounded against bad metadata | `synth.scale`, `cfg.blocks_per_metre = 1.0` |
+| D6 | Licences | Only clearly permissive (CC0, CC BY), recorded per pair | `cfg.licences`, manifests, .schem Metadata |
+| D7 | Berlin LoD2 | Not a V1 dependency; documented plug-in point | dataset-pipeline.md, "Adding a data source" |
+| D8 | Storage | ~150 GB temporary; stream: download, process, validate, save, delete | `cfg.tmp_dir`, `cfg.keep_raw`, `synth.run` |
+| D9 | Real evaluation set | ~64 diverse builds, held out | `eval/real-eval-v1.json`, `synth.real_eval.assert_disjoint` |
+| D10 | `mcvoxel` | Shared package, only as clean engineering (API, tests, docs, no app hacks) | Real2Minecraft `mcvoxel/` (+ README) |
+| D11 | Voxeliser bug | Fixed at the root, tests, used everywhere | `mcvoxel.raster.clean_solid` |
+| D12 | Height | 300-block bound, no compression of normal buildings | `cfg.max_height_blocks` (too_tall rejects) |
+
+Still open (details in the pilot v2 report and the final summary):
+
+* **Tall exception to the footprint rule** — added so towers, lighthouses and minarets are
+  not systematically rejected (`cfg.min_tall_height_blocks = 16`; 0 = footprint only). It
+  kept 9 pilot pairs, mostly good ones. Needs your confirmation.
+* **Low-pitch roof step** — builders use both a full block and a top slab; `RoofParams.low_upper`.
+* **Plots and scenes** — the largest remaining junk cause (round islands, gardens, beaches).
+* **Scale of landmarks** — assets rarely carry true size; priors give plausible, not true, heights.
+
+---
+
+## 10. Next steps, in order
+
+1. Your review of pilot v2 in the review tool (`python -m synth.review data/synthetic/pilot-v2`).
+2. Real TRELLIS vs synthetic degradation: input images for the 120 pilot pairs are rendered;
+   start the TRELLIS server, run `trellis_compare generate` then `compare`, retune `cfg.degrade`.
+   Extend to 300–500 buildings from a larger run.
+3. Plot/scene handling and a thumbnail classifier for the remaining junk.
+4. A scaled run (1–2k assets, `renders="review"`), then the full streamed run.
+5. Model and training loop at 64³ on builder targets; evaluation on held-out synthetic pairs.
+6. Real evaluation pairs (AI photo + TRELLIS for the 64 held-out builds) and the gap report.
+7. Berlin LoD2 reader (phase 2).
+
+---
+
+## 11. How to run it
+
+See [dataset-pipeline.md](dataset-pipeline.md#running-it). In short:
+
+```powershell
+.venv\Scripts\python -m pip install -r requirements-synth.txt
+.venv\Scripts\python -m synth.select --config data/synthetic/pilot-v2/run_config.json
+.venv\Scripts\python -m synth.run    --config data/synthetic/pilot-v2/run_config.json --workers 6
+.venv\Scripts\python -m synth.report data/synthetic/pilot-v2
+.venv\Scripts\python -m synth.review data/synthetic/pilot-v2
+.venv\Scripts\python -m unittest discover -s tests                      # 339 tests
 ```
-data/synthetic/<dataset_version>/
-  vocab.json                # materials[], shapes[], version — frozen per run
-  index.csv                 # one row per sample: uid, sha256, licence, author, split,
-                            #   target_size, seeds, qa_ok, qa_reason, domain (objaverse|lod2|real)
-  samples/<uid>__<size>/
-    target.schem            # canonical target, provenance in Metadata (2.5)
-    input.npz               # occ, rgb, normal, origin, scale, yaw_deg
-    target.npz              # shape (uint8), material (uint16)  — cache, rebuildable
-    manifest.json
-    preview.png
-```
-
-Kept **outside git** (5–10 GB) and outside `data/builds/` — the same rule `gen_houses`
-enforces: generated data must never be mistaken for collected data. Axis order is Sponge
-`(H, L, W)` everywhere so `schem_voxels`, `thumbs`, `contact_sheet` and `house_stats` read
-it directly.
-
-### 3.4 Training recipe
-
-- **Loss**: cross-entropy on shape (class-weighted: air is ~78% of voxels at the library's
-  median 22% density) + cross-entropy on material **masked to non-air target voxels** +
-  a Dice term on occupancy. Material loss is also down-weighted on interior voxels (invisible
-  in-game; `classify_shapes` already treats them as "cheapest to leave full").
-- **Augmentation**: 90° yaw rotations and X/Z mirrors — **with the stair-facing
-  permutation applied to the labels** (rotation maps E→S→W→N; a mirror swaps E↔W or N↔S);
-  colour jitter on `rgb`; random crops biased to the surface.
-- **Splits** by source *author*, not by object, so near-duplicate uploads by one artist do
-  not leak; hold out 5% for validation and a fixed 500-sample test set.
-- **Schedule**: AdamW, 3e-4 with cosine decay, 100k iterations, EMA weights; evaluate
-  every 5k on synthetic-val and, once it exists, on the real set (section 4).
-- **Metrics**: occupancy IoU, shape accuracy on surface voxels, material accuracy, and
-  material *family* accuracy via `block_roles.family` (brick vs. bricks-of-another-shade is
-  not an error a player sees); plus `house_stats` on 200 predicted schems as a
-  distribution check (roof type mix, storey count, density).
-
-### 3.5 Inference chaining (later, in `Real2Minecraft`)
-
-`photo → _prepare_cutout → _run_trellis_api → normalize_mesh → estimate_yaw → voxel features
-→ model → (shape, material) → apply_shapes-style state strings → export_schematic /
-schem_write`. The model replaces `_quantize_colors + match_blocks + classify_shapes` (and
-building mode's massing) behind a flag, with the current code as the fallback path.
-
----
-
-## 4. Where the real, hand-curated schematics plug in
-
-### 4.1 What has to be produced
-
-Today: 106 real schems, 110 screenshots, 0 AI images, 0 meshes. Each real pair costs one
-manual AI-photo generation (the step the app deliberately keeps manual) plus a TRELLIS run
-(1–2 min GPU; `trellis_client` can drive it). Realistic budget: **50 builds** ≈ one long
-day of human time. Pick them by `house_stats` coverage — every roof type, 1–3 storeys,
-the main wall-material families — not by convenience.
-
-### 4.2 Registration
-
-A TRELLIS mesh of an AI photo of a render of a schem is not on the schem's grid. Align it
-with deterministic code before it becomes an input: normalize + yaw-align, scale the
-longest horizontal axis to the schem's known width/length, then a small search over
-(yaw ∈ {0, 90, 180, 270} + ±5°, XZ shift ±3 blocks, scale ±10%) maximising occupancy IoU
-between the voxelised mesh and the schem's `solid_mask()`. Record the residual IoU; pairs
-below ~0.5 are TRELLIS failures, not training data.
-
-### 4.3 Mapping the real schem into the vocabulary
-
-- `block_roles.normalise` folds legacy names; each base block maps to the nearest
-  `vocab.json` material by `block_colors.color_for` distance within the same
-  `block_roles.family` (so `mossy_stone_bricks` → `stone_bricks`, not `moss_block`).
-- Stairs and slabs keep shape + facing; other non-cubes become full cubes in v1.
-- **Terrain and plants get an ignore label** (`block_roles.is_terrain/is_plant`): 55% of
-  the library's non-air blocks are plot, the AI photo shows it, TRELLIS reconstructs it,
-  and the model must not be graded on lawn. For the eval set, additionally crop the plot
-  with the app's "Trim to the build" so the numbers describe the house.
-
-### 4.4 Split and metrics
-
-Split by **family**, not by build: `7__grannitlune`/`81__grannitlune-1` are byte
-duplicates, `starfolk-town` ×4, `paris-house` ×4, `kollektive` ×3 and
-`1-chunk-suburban-houses` ×10 are one source each. Roughly 30 builds for fine-tuning and
-20 held out, the 16 synthetic `house_grammar` builds excluded from both. Metrics are the
-ones in 3.4, computed on structural voxels only, plus the side-by-side schem/mesh
-thumbnails the Library already renders on one camera — the same visual check the app uses
-to catch a mis-dropped file.
-
-### 4.5 Fine-tuning
-
-Continue training from the synthetic checkpoint at 1/10 the learning rate for a few
-thousand iterations on the 30 real pairs (heavy augmentation, mixed 1:4 with synthetic
-batches so it does not forget). What this teaches that the synthetic target cannot:
-Minecraft builders' conventions — stair courses on rakes, quoins and bands, window rhythm,
-foundation courses — the things `house_grammar` had to encode by hand.
-
----
-
-## 5. Decisions needed from you
-
-1. **Pair asymmetry.** (a) synthetic degradation only, (b) synthetic + a 300–500 sample
-   real-TRELLIS calibration subset (~10 GPU-hours, recommended), or (c) real TRELLIS for
-   everything (~16 GPU-days). Without any of these the model is a lookup table of the
-   voxeliser.
-2. **Dataset and licence policy.** Objaverse-Sketchfab as primary (recommended). Then:
-   CC-BY + CC0 only (safe for a commercial product, ~89% of objects), or also BY-SA / NC
-   (more data, non-commercial or share-alike constraints on the derived dataset)? Include
-   BuildingNet for eval (research-only terms)? Reserve textured LoD2 city models for a
-   phase 2?
-3. **Resolution envelope.** Target-size distribution sampled from the library (p10 16 /
-   median 26 / p90 46 on the longest horizontal axis) and a 128-block maximum matching the
-   `Real2Minecraft` slider; 64³ training crops. Also: plots excluded from synthetic targets
-   and ignored in real ones (recommended), or modelled?
-4. **Vocabulary scope for v1.** ~128 materials × {air, full, 2 slabs, 4 stairs}. Panes,
-   fences, doors, trapdoors (13% of structural blocks in the library) deferred to v2?
-5. **Where the code lives.** The voxel core (`voxelize`, `voxel_sampling`,
-   `color_quantize`, `block_palette`, `block_shapes`, `mesh_normalize`, `yaw_align`) is in
-   `Real2Minecraft`; the schem tooling (`schem_write`, `schem_voxels`, `block_roles`,
-   `thumbs`, `contact_sheet`, `house_stats`) is here. Options: make `Real2Minecraft`'s core
-   an installable package both repos depend on (recommended), or extract a third shared
-   package. The generator script and training code then go in whichever repo owns the
-   package.
-6. **Compute and storage.** Local 4060 Ti only (sufficient: data generation ≈ 1.5 CPU-days,
-   training ≈ 1 GPU-day per run), and where 100–165 GB of streamed downloads plus 5–10 GB
-   of retained pairs go given 164 GB free on C: (external drive, or strict
-   download-process-delete).
-7. **Eval set size.** 50 real builds through the manual AI-photo + TRELLIS path
-   (recommended) — that is the only remaining manual data work, and it gates every number
-   in section 4.
-
-## 6. Suggested build order (after the decisions)
-
-1. Package boundary (Decision 5) and a `vocab.json` frozen from library statistics.
-2. Ingest + filter: index from TRELLIS-500K/Objaverse metadata; a 200-object pilot
-   downloaded, voxelised, palette-assigned, written as pairs, reviewed on a contact sheet.
-3. Degradation model calibrated on the 228 cached TRELLIS outputs; the optional real-TRELLIS
-   calibration subset.
-4. Full generation run (streamed), QA report.
-5. Model + training loop; first synthetic-only checkpoint and metrics.
-6. Real pairs (section 4) produced through the app; registration tool; fine-tune; eval.
-7. Inference flag in `Real2Minecraft`.
-
-## 7. Unverified or open
-
-- BuildingNet's licence text sits behind its access form; the paper names Trimble
-  3D Warehouse as the source but states no terms.
-- ArchiSet has no download page I could find; BuildingWorld's release is not confirmed.
-- Berlin's building count and the exact set of PLATEAU municipalities with textured LoD2
-  were not verified; both are secondary.
-- TRELLIS-500K lists objects as of its curation date; some Sketchfab objects have since
-  been removed, so the real yield will be a little lower than the caption counts.
-
-## Sources
-
-- Objaverse: <https://objaverse.allenai.org/>, metadata and LVIS files at
-  <https://huggingface.co/datasets/allenai/objaverse>
-- Objaverse-XL paper (licence statement, source counts): <https://arxiv.org/abs/2307.05663>
-- TRELLIS-500K: <https://huggingface.co/datasets/JeffreyXiang/TRELLIS-500K>;
-  toolkit: <https://github.com/microsoft/TRELLIS/blob/main/DATASET.md>;
-  glb export axes: <https://github.com/microsoft/TRELLIS/blob/main/trellis/utils/postprocessing_utils.py>
-- Cap3D captions: <https://huggingface.co/datasets/tiange/Cap3D>
-- Objaverse++: <https://github.com/TCXX/ObjaversePlusPlus>
-- BuildingNet: <https://github.com/buildingnet/buildingnet_dataset>, paper <https://arxiv.org/abs/2110.04955>
-- 3D Warehouse terms FAQ: <https://help.sketchup.com/en/3d-warehouse/3d-warehouse-terms-use-faq>
-- 3D BAG: <https://docs.3dbag.nl/en/>
-- PLATEAU (CC BY 4.0, textured subset): <https://collab.dvb.bayern/spaces/TUMgisproject/pages/64282282/Semantic+3D+City+Model+of+Tokyo>;
-  open city model catalogue: <https://github.com/OloOcki/awesome-citygml>
-- Berlin LoD2: <https://daten.berlin.de/datensaetze/lod2-geb-udedaten-berlin>,
-  <https://www.businesslocationcenter.de/downloadportal>
-- Helsinki 3D: <https://www.hel.fi/en/decision-making/information-on-helsinki/maps-and-geospatial-data/helsinki-3d>
-- Building3D: <https://building3d.ucalgary.ca/>
-- BuildingWorld: <https://arxiv.org/abs/2511.06337>
-- ArchiSet: <https://mlanthology.org/iccv/2025/yin2025iccv-archiset/>
-- 3D-FRONT: <https://arxiv.org/abs/2011.09127>; ShapeNet: <https://shapenet.org/about>
