@@ -1,10 +1,76 @@
 # Mesh → .schem: dataset, voxeliser, model and evaluation plan
 
-**Current scope (2026-09-28): foundation and small-pilot quality review only.**
-Do not train a model or scale to a large dataset. See
-[the resumed quality audit](dataset-quality-audit.md) for the current implementation,
-paired TRELLIS experiment and remaining problems. The model and scale-up sections below
-are historical planning, not authorization to execute them.
+**Current scope (2026-10-11): schematic-first pivot.** Human-built schematics are now the
+training targets and model inputs are derived from them. Training is in scope once the
+dataset is frozen and paired (Phases 2–4). [Version 4](#version-4-2026-10-11-schematic-first-pivot)
+is the current plan; sections 0–11 below are the version 3 record and are marked where
+superseded.
+
+---
+
+## Version 4 (2026-10-11): schematic-first pivot
+
+Version 3 used Objaverse meshes as the source, made targets with `mcvoxel` rules, and kept
+real builds for evaluation only. Version 4 reverses that: **human builds are the targets**
+and each input is generated from its target.
+
+### Pipeline
+
+```
+inference   photo → background removal → TRELLIS mesh → normalize → voxelize at 2x block resolution → learned model → .schem
+pairs       human .schem (target) → coloured surface mesh → synth/degrade.py (TRELLIS-like) → voxelize at 2x into the target's frame → input
+```
+
+### Dataset
+
+| | |
+| --- | --- |
+| Builds | ~317 human-built realistic schematics (Planet Minecraft + Abfielder); count before the Phase 2 freeze |
+| Location | `C:\Users\mendo\Documents\Codex\2026-10-05\find-and-download-30-high-quality-2\outputs\Real2Minecraft_Dataset\` |
+| Files | `manifest.json`, `rejection_log.json`, `safety_holdout.json` |
+| Ownership | written by the collection run; do not modify it before the Phase 2 freeze |
+
+### Decisions (2026-10-11)
+
+- **D13 Data direction: schematic-first.** Human builds are targets, inputs are derived from
+  them. The Objaverse synth path is parked (kept, not deleted, possible pretraining source
+  later).
+- **D14 Licensing (supersedes D6 for the schematic dataset): personal research prototype.**
+  - Train privately on tiers A+B+C. Never redistribute schematics, derived pairs or renders.
+  - Tier A = explicit reuse permission. Tier B = licence unclear. Tier C = personal-use /
+    noncommercial. Tier X = excluded.
+  - Tier X now: Costanera (CC BY-NC-ND, no derivatives) and the Xorph barn (no
+    redistribution).
+  - Any public release or commercial use of model weights requires retraining on tier A
+    only, or re-auditing licences first.
+  - Every build keeps its provenance and licence fields.
+
+  Details: [dataset-licensing.md](dataset-licensing.md#schematic-dataset-2026-10).
+- **D15 Scale (supersedes D5 for this dataset):** never rescale a schematic. Record
+  blocks-per-storey per build. Train v1 on the 4–6 band; builds outside it are set aside
+  (flagged, not deleted). Storey-height conditioning is a later option.
+- **D16 Input resolution:** input voxels at 2x the target grid (each block = 2x2x2 input
+  cells), same frame and origin as the target.
+- **D17 Evaluation (supersedes D9):** split by creator ~80/10/10 on the new dataset, plus a
+  small real-photo TRELLIS set. The old `eval/real-eval-v1.json` (64 builds from the earlier
+  122-build library) is marked superseded and gets reconciled during the dataset freeze.
+- **D18 Baseline:** the current rule-based mcvoxel/building output is the baseline the model
+  must beat. It stays in the app until the model beats it.
+
+### Phase plan
+
+| Phase | Work |
+| --- | --- |
+| 1 (2026-10-11) | Record the pivot in the docs; park the old pipeline (documentation only) |
+| 2 | Freeze and dedupe the dataset; reconcile `eval/real-eval-v1.json` (D17) |
+| 3 | Normalize: `.litematic` reader, legacy block IDs, crop, vocabulary coverage |
+| 4 | Generate pairs (D16); real-TRELLIS check of the synthetic inputs |
+| 5 | torch environment, 3D U-Net, baseline score (D18) |
+
+Which code is parked, active or excluded:
+[dataset-pipeline.md, Status](dataset-pipeline.md#status-2026-10-11).
+
+---
 
 *Version 3, 2026-09-26. Version 2 (2026-09-24) proposed the plan and ran pilot v1; version 3
 records your V1 decisions (section 9), the dataset pipeline built on them and pilot v2
@@ -18,6 +84,7 @@ Companion documents:
 - [dataset-licensing.md](dataset-licensing.md) — the licence register, written before any
   mesh was downloaded.
 - `eval/real-eval-v1.json` — the held-out real evaluation set (64 builds, one per family).
+  Superseded by D17; reconciled during the Phase 2 freeze.
 - `data/synthetic/pilot-v2/` (gitignored) — pilot v2: pairs, report.md, contact sheets,
   review tool data. `pilot-v1/` is the earlier run.
 
@@ -28,6 +95,8 @@ say so.
 ---
 
 ## 0. Where things stand
+
+*Superseded by [version 4](#version-4-2026-10-11-schematic-first-pivot): this is the version 3 status.*
 
 | Area | Status |
 | --- | --- |
@@ -47,6 +116,8 @@ targets should follow geometry or builder convention for roofs (section 6.3).
 
 ## 1. Your decisions, and what each changed
 
+*Row 5 superseded by D13 and D17 ([version 4](#version-4-2026-10-11-schematic-first-pivot)): real builds are now the training targets.*
+
 | # | Decision | What it changed |
 | --- | --- | --- |
 | 1 | Moderately messy, TRELLIS-like inputs; clean targets | Degradation reproduces TRELLIS's measured imperfections (section 7), calibrated on real TRELLIS output. |
@@ -61,6 +132,8 @@ targets should follow geometry or builder convention for roofs (section 6.3).
 ---
 
 ## 2. Source datasets, re-evaluated for architectural diversity
+
+*Parked by D13 ([version 4](#version-4-2026-10-11-schematic-first-pivot)): Objaverse is no longer the training source; kept as a possible pretraining source.*
 
 ### 2.1 Objaverse 1.0, measured from metadata
 
@@ -201,6 +274,8 @@ holds 18 tests for the package.
 
 ## 4. The real Minecraft library
 
+*Superseded by D13 and D17 ([version 4](#version-4-2026-10-11-schematic-first-pivot)): the evaluation-only split (4.3) is reversed; counts describe the earlier library.*
+
 ### 4.1 What exists
 
 | Measure | Value |
@@ -270,6 +345,8 @@ share). The same metrics on held-out synthetic pairs give the gap directly.
 
 ### 5.1 Target encoding
 
+*Scale bullet superseded by D15, input frame resolution by D16 ([version 4](#version-4-2026-10-11-schematic-first-pivot)).*
+
 - **Vocabulary:** 8 shapes (air, full, bottom slab, top slab, stairs facing E/W/N/S) × 120
   materials (the 110-block palette, 9 glasses, air). Upside-down stairs, panes, fences,
   doors and trapdoors are v2.
@@ -321,6 +398,8 @@ machine inside the TRELLIS environment, so a sparse model is an option later.
 ---
 
 ## 6. The pilot
+
+*Historical: Objaverse pilots on a path parked by D13 ([version 4](#version-4-2026-10-11-schematic-first-pivot)).*
 
 ### 6.1 What ran
 
@@ -497,6 +576,8 @@ buildings), which is one more reason for the real-TRELLIS calibration subset bel
 
 ## 8. Model and training (unchanged in outline; nothing implemented)
 
+*Splits and the never-train-on-real rule superseded by D13 and D17, input resolution by D16 ([version 4](#version-4-2026-10-11-schematic-first-pivot)).*
+
 - Dense 3D residual U-Net, 64³ windows to start (batch 8), 96³ as the first upgrade; two
   heads (shape, material); inputs: occupancy, surface flag, RGB, height.
 - Loss: class-weighted shape cross-entropy, material cross-entropy on supervised solid
@@ -520,11 +601,11 @@ buildings), which is one more reason for the real-TRELLIS calibration subset bel
 | D2 | Junk | Deterministic metadata and geometry filters first, every rejection recorded; a learned classifier only as a hook | `synth.filters` (`CLASSIFIERS` empty: TODO) |
 | D3 | Scans | Photogrammetry excluded from V1 | `cfg.exclude_photogrammetry`: text + Objaverse++ + a geometric scan check |
 | D4 | Minimum size | ~16 blocks of footprint after 1:1 scaling, configurable; small assets rejected, not rescaled | `cfg.min_footprint_blocks` (+ tall exception, see below) |
-| D5 | Scale | 1:1 with the player; real proportions; bounded against bad metadata | `synth.scale`, `cfg.blocks_per_metre = 1.0` |
-| D6 | Licences | Only clearly permissive (CC0, CC BY), recorded per pair | `cfg.licences`, manifests, .schem Metadata |
+| D5 | Scale | **Superseded by D15 ([version 4](#version-4-2026-10-11-schematic-first-pivot)) for the schematic dataset.** 1:1 with the player; real proportions; bounded against bad metadata | `synth.scale`, `cfg.blocks_per_metre = 1.0` |
+| D6 | Licences | **Superseded by D14 ([version 4](#version-4-2026-10-11-schematic-first-pivot)) for the schematic dataset.** Only clearly permissive (CC0, CC BY), recorded per pair | `cfg.licences`, manifests, .schem Metadata |
 | D7 | Berlin LoD2 | Not a V1 dependency; documented plug-in point | dataset-pipeline.md, "Adding a data source" |
 | D8 | Storage | ~150 GB temporary; stream: download, process, validate, save, delete | `cfg.tmp_dir`, `cfg.keep_raw`, `synth.run` |
-| D9 | Real evaluation set | ~64 diverse builds, held out | `eval/real-eval-v1.json`, `synth.real_eval.assert_disjoint` |
+| D9 | Real evaluation set | **Superseded by D17 ([version 4](#version-4-2026-10-11-schematic-first-pivot)).** ~64 diverse builds, held out | `eval/real-eval-v1.json`, `synth.real_eval.assert_disjoint` |
 | D10 | `mcvoxel` | Shared package, only as clean engineering (API, tests, docs, no app hacks) | Real2Minecraft `mcvoxel/` (+ README) |
 | D11 | Voxeliser bug | Fixed at the root, tests, used everywhere | `mcvoxel.raster.clean_solid` |
 | D12 | Height | 300-block bound, no compression of normal buildings | `cfg.max_height_blocks` (too_tall rejects) |
@@ -542,6 +623,8 @@ Still open (details in the pilot v2 report and the final summary):
 
 ## 10. Next steps, in order
 
+*Superseded by the [version 4 phase plan](#phase-plan).*
+
 1. Your review of pilot v2 in the review tool (`python -m synth.review data/synthetic/pilot-v2`).
 2. Real TRELLIS vs synthetic degradation: input images for the 120 pilot pairs are rendered;
    start the TRELLIS server, run `trellis_compare generate` then `compare`, retune `cfg.degrade`.
@@ -555,6 +638,8 @@ Still open (details in the pilot v2 report and the final summary):
 ---
 
 ## 11. How to run it
+
+*These commands run the Objaverse path, parked by D13 ([version 4](#version-4-2026-10-11-schematic-first-pivot)).*
 
 See [dataset-pipeline.md](dataset-pipeline.md#running-it). In short:
 
