@@ -32,7 +32,7 @@ Full table: `docs/dataset-pipeline.md`, Status. Licensing (tiers A/B/C/X):
 - Never modify `data/builds/`, `data/collector.db` or other data folders without being asked.
 - Never commit data: no schematics, worlds, screenshots, meshes, pairs or model weights.
   `.gitignore` blocks them; do not un-ignore or force-add (`git add -f`) them.
-- Treat the schematic dataset folder named in the plan as read-only until the Phase 2 freeze.
+- The frozen training dataset is `data/real-schems-v1/` (`docs/real-schems-v1.md`): never edit its read-only `source/`; derived files live beside it.
 - Changing Python code needs a server restart (README, "Restart after changing Python code").
 
 ## Tests

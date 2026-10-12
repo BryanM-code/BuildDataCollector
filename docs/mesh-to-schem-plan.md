@@ -25,10 +25,9 @@ pairs       human .schem (target) → coloured surface mesh → synth/degrade.py
 
 | | |
 | --- | --- |
-| Builds | ~317 human-built realistic schematics (Planet Minecraft + Abfielder); count before the Phase 2 freeze |
-| Location | `C:\Users\mendo\Documents\Codex\2026-10-05\find-and-download-30-high-quality-2\outputs\Real2Minecraft_Dataset\` |
-| Files | `manifest.json`, `rejection_log.json`, `safety_holdout.json` |
-| Ownership | written by the collection run; do not modify it before the Phase 2 freeze |
+| Builds | 321 human-built realistic schematics (Planet Minecraft 235 + Abfielder 86), frozen 2026-10-11 as **real-schems-v1** |
+| Location | `data/real-schems-v1/` (local only): read-only `source/` copy plus `index.json`, `splits.json`, `near_duplicates.json`. See [real-schems-v1.md](real-schems-v1.md) |
+| Collected at | `C:\Users\mendo\Documents\Codex\2026-10-05\find-and-download-30-high-quality-2\outputs\Real2Minecraft_Dataset\` (never written to) |
 
 ### Decisions (2026-10-11)
 
@@ -56,14 +55,23 @@ pairs       human .schem (target) → coloured surface mesh → synth/degrade.py
   122-build library) is marked superseded and gets reconciled during the dataset freeze.
 - **D18 Baseline:** the current rule-based mcvoxel/building output is the baseline the model
   must beat. It stays in the app until the model beats it.
+- **D19 (2026-10-11): The old BDC library (`data/builds/`, 122 builds) is ARCHIVED, not
+  merged.**
+  - 96 of its 106 real builds lost their block states on import (stairs/slabs in default
+    orientation).
+  - Only 1 of 106 has a source URL, so licence tiers can't be assigned.
+  - The 16 synthetic houses stay excluded.
+  - `eval/real-eval-v1.json` stays on disk (tests use it) but is superseded by the D17
+    creator split.
+  - Do not touch `data/builds/`.
 
 ### Phase plan
 
 | Phase | Work |
 | --- | --- |
 | 1 (2026-10-11) | Record the pivot in the docs; park the old pipeline (documentation only) |
-| 2 | Freeze and dedupe the dataset; reconcile `eval/real-eval-v1.json` (D17) |
-| 3 | Normalize: `.litematic` reader, legacy block IDs, crop, vocabulary coverage |
+| 2 (done 2026-10-11) | Freeze and dedupe the dataset; reconcile `eval/real-eval-v1.json` (D17). **Done:** 321 builds frozen as [real-schems-v1](real-schems-v1.md) (1,792 files verified); tiers A 43 / B 265 / C 11 / X 2; creator split train 255 / val 32 / test 32 / excluded 2 (216 creator groups, seed 20261011); 0 metadata near-duplicate candidates; `real-eval-v1` superseded (D19) |
+| 3 | Normalize: `.litematic` reader, legacy block IDs, crop, vocabulary coverage; geometric duplicate check (rotation, crop, cross-format), deferred from Phase 2 |
 | 4 | Generate pairs (D16); real-TRELLIS check of the synthetic inputs |
 | 5 | torch environment, 3D U-Net, baseline score (D18) |
 
@@ -84,7 +92,7 @@ Companion documents:
 - [dataset-licensing.md](dataset-licensing.md) — the licence register, written before any
   mesh was downloaded.
 - `eval/real-eval-v1.json` — the held-out real evaluation set (64 builds, one per family).
-  Superseded by D17; reconciled during the Phase 2 freeze.
+  Superseded by D17; kept on disk for its tests (D19).
 - `data/synthetic/pilot-v2/` (gitignored) — pilot v2: pairs, report.md, contact sheets,
   review tool data. `pilot-v1/` is the earlier run.
 
