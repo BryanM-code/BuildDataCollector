@@ -3,8 +3,8 @@
 Two things in one repo:
 
 - **Collector**: a local Flask app (`server.py`, port 5000) that stores Minecraft builds with
-  their screenshots, AI image and TRELLIS mesh. State lives on disk: `data/builds/` (tracked)
-  and `data/collector.db` (untracked, rebuilt from disk). See `README.md`.
+  their screenshots, AI image and TRELLIS mesh. State lives on disk: `data/builds/` and
+  `data/collector.db`, both **local only, never committed** (the repo is public; code and docs only). See `README.md`.
 - **Synth tooling**: `synth/`, offline training-pair generation on top of `mcvoxel`, the voxel
   core in the sibling `../Real2Minecraft` repo (installed editable via `requirements-synth.txt`).
 
@@ -30,6 +30,8 @@ Full table: `docs/dataset-pipeline.md`, Status. Licensing (tiers A/B/C/X):
 ## Rules
 
 - Never modify `data/builds/`, `data/collector.db` or other data folders without being asked.
+- Never commit data: no schematics, worlds, screenshots, meshes, pairs or model weights.
+  `.gitignore` blocks them; do not un-ignore or force-add (`git add -f`) them.
 - Treat the schematic dataset folder named in the plan as read-only until the Phase 2 freeze.
 - Changing Python code needs a server restart (README, "Restart after changing Python code").
 
