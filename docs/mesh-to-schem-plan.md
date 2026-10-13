@@ -29,7 +29,7 @@ pairs       human .schem (target) → coloured surface mesh → synth/degrade.py
 | Location | `data/real-schems-v1/` (local only): read-only `source/` copy plus `index.json`, `splits.json`, `near_duplicates.json`. See [real-schems-v1.md](real-schems-v1.md) |
 | Collected at | `C:\Users\mendo\Documents\Codex\2026-10-05\find-and-download-30-high-quality-2\outputs\Real2Minecraft_Dataset\` (never written to) |
 
-### Decisions (2026-10-11)
+### Decisions (2026-10-11; D15 revised and D20–D21 added 2026-10-12)
 
 - **D13 Data direction: schematic-first.** Human builds are targets, inputs are derived from
   them. The Objaverse synth path is parked (kept, not deleted, possible pretraining source
@@ -45,9 +45,14 @@ pairs       human .schem (target) → coloured surface mesh → synth/degrade.py
   - Every build keeps its provenance and licence fields.
 
   Details: [dataset-licensing.md](dataset-licensing.md#schematic-dataset-2026-10).
-- **D15 Scale (supersedes D5 for this dataset):** never rescale a schematic. Record
-  blocks-per-storey per build. Train v1 on the 4–6 band; builds outside it are set aside
-  (flagged, not deleted). Storey-height conditioning is a later option.
+- **D15 Scale (revised 2026-10-12; supersedes D5 for this dataset): no scale rule.**
+  - Never rescale or shrink a human-built schematic.
+  - Never filter by storey height. Buildings legitimately vary in scale, sometimes on purpose.
+  - The storey estimate (blocks per storey) stays in the normalized records as information
+    only.
+  - The first version of D15 set aside builds outside a storey-height band. That is
+    withdrawn.
+  - Storey-height conditioning is still a possible later option.
 - **D16 Input resolution:** input voxels at 2x the target grid (each block = 2x2x2 input
   cells), same frame and origin as the target.
 - **D17 Evaluation (supersedes D9):** split by creator ~80/10/10 on the new dataset, plus a
@@ -64,6 +69,33 @@ pairs       human .schem (target) → coloured surface mesh → synth/degrade.py
   - `eval/real-eval-v1.json` stays on disk (tests use it) but is superseded by the D17
     creator split.
   - Do not touch `data/builds/`.
+- **D20 (2026-10-12): Vocabulary v3 (`mcvox-v3`).** Shapes and materials expand so human
+  builds are expressed faithfully, including every texture variant (wood species, glass
+  colours, stone variants).
+  - Factored shape × material. A material is a texture family, and a `VALID[shape,
+    material]` table records which pairs exist: 30 shapes × 301 materials, 1,210 valid
+    pairs.
+  - Append-only: v2's shape and material IDs are unchanged and v2 targets still decode.
+  - New shapes: upside-down stairs, pane, closed and open trapdoors, the lower door half,
+    horizontal pillars, fence gates and carpet.
+  - The model predicts only what the game cannot derive. Stair corners, connections, door
+    upper halves and hinges, and gate `in_wall` are rebuilt after assembly.
+  - Remaining unrepresentable blocks in supervised regions become IGNORE in the training
+    targets, never air. That covers decor, fluids, snow layers, unsupported blocks and door
+    upper halves.
+  - Waxed, infested and petrified blocks are read-time aliases, not vocabulary.
+  - Spec: Real2Minecraft `mcvoxel/README.md` ("Vocabulary v3"). Coverage:
+    [vocab-coverage.md](vocab-coverage.md).
+- **D21 (2026-10-12): Target Minecraft version for validation and export is 1.21.11
+  (DataVersion 4671).** It is the newest 1.21.x release.
+  - Pale oak needs 1.21.4 or later.
+  - It covers every block real-schems-v1 uses except `poplar_fence` and
+    `stripped_poplar_wood`. Those come from one build (`pmc-house-32`, DataVersion 5023,
+    Minecraft 26.3), and no 1.21.x has them, so they are IGNORE.
+  - `chain` is read as `iron_chain`, its name since 1.21.9.
+  - Block table: Real2Minecraft `mcvoxel/blocktables/blocks_1_21_11.json`, from PrismarineJS
+    minecraft-data (MIT; source URL, commit and SHA256 kept in the file).
+  - `schem_write` validates against it whenever it writes DataVersion 4671.
 
 ### Phase plan
 
@@ -71,9 +103,36 @@ pairs       human .schem (target) → coloured surface mesh → synth/degrade.py
 | --- | --- |
 | 1 (2026-10-11) | Record the pivot in the docs; park the old pipeline (documentation only) |
 | 2 (done 2026-10-11) | Freeze and dedupe the dataset; reconcile `eval/real-eval-v1.json` (D17). **Done:** 321 builds frozen as [real-schems-v1](real-schems-v1.md) (1,792 files verified); tiers A 43 / B 265 / C 11 / X 2; creator split train 255 / val 32 / test 32 / excluded 2 (216 creator groups, seed 20261011); 0 metadata near-duplicate candidates; `real-eval-v1` superseded (D19) |
-| 3 | Normalize: `.litematic` reader, legacy block IDs, crop, vocabulary coverage; geometric duplicate check (rotation, crop, cross-format), deferred from Phase 2 |
-| 4 | Generate pairs (D16); real-TRELLIS check of the synthetic inputs |
+| 3 (done 2026-10-12, measured; nothing decided) | Normalize: `.litematic` reader, legacy block IDs, crop, vocabulary coverage. **Done:** all 319 non-excluded builds read and validated: 0 failures; dims and the 178 metadata non-air counts all match; 0 unknown legacy ids. Cropped to the building: 48% of non-air blocks were landscape or site; 85 `crop_aggressive`, 18 `multi_building`, 3 `crop_kept_landscape`, 2 `crop_no_core`. Interior masked as ignore: median interior fraction 0.86; 17 `interior_leak_suspect`. Storey height recorded (information only, D15): 142 builds at high/medium confidence, 119 low, 58 unknown. **Vocabulary coverage of supervised blocks (v2): 72.7% exact, 3.2% lossy, 12.2% missing material, 11.2% missing shape, 0.7% decor.** Top 20 materials plus pane, door, trapdoor and upside-down-stair classes would reach 94.7% ([vocab-coverage.md](vocab-coverage.md)). Details: [real-schems-v1.md, Normalization](real-schems-v1.md#normalization-phase-3). The geometric duplicate check (rotation, crop, cross-format) deferred from Phase 2 is **not done yet**: it is now possible, as every build parses |
+| Vocab v3 (done 2026-10-12) | Vocabulary v3 (D20), target version (D21), no scale rule (D15 revised). **Done:** `mcvox-v3` has 30 shapes × 301 materials and 1,210 valid pairs; v2 IDs are unchanged. Every `VALID` decode validates against 1.21.11. Every normalized build now carries training targets (`target_shape` / `target_material` in its npz; IGNORE for interior, decor, unsupported blocks and door upper halves). **Coverage of supervised blocks, v2 → v3: 75.9% → 98.5% representable** (96.15% exact, 2.17% lossy, 0.18% derived, 1.49% IGNORE: 1.48% decor / fluids / snow, 0.015% structural). By split: train 76.6% → 98.4%, val 74.9% → 98.6%, test 69.7% → 99.2% ([vocab-coverage.md](vocab-coverage.md)) |
+| 4 (next) | Generate pairs (D16); real-TRELLIS check of the synthetic inputs |
 | 5 | torch environment, 3D U-Net, baseline score (D18) |
+
+Open questions (for you; nothing below is decided).
+
+Resolved 2026-10-12:
+
+* the vocabulary (D20)
+* storey-height filtering: none (D15 revised)
+* `poplar_fence` / `stripped_poplar_wood`: a Minecraft 26.3 wood, newer than any 1.21.x, so
+  IGNORE under D21
+
+Still open:
+
+1. **Landscape scenes and compounds.** Should builds whose crop kept rock or hill (the
+   lighthouse island, the forest cottage, terraced-slope houses) be kept as they are,
+   re-cropped by hand, or set aside? Should the 18 `multi_building` builds be one target each,
+   split per building, or set aside?
+2. **Interior heuristic.** Recessed porches, garages and inner corners under eaves are
+   ignored. Is that acceptable for training targets?
+3. **Below-ground blocks.** Built blocks below the ground level (253 builds, mostly floors set
+   into the plate) are kept but ignored. Keep that, or cut the targets at the ground?
+4. **Invisible blocks.** `light`, `barrier` and `structure_void` became air. Is that right?
+5. **Geometric duplicates.** Run the rotation/crop/cross-format check now that every build
+   parses (Phase 2 deferred it)?
+6. **D21's wording.** No 1.21.x covers every block in the dataset: poplar (66 blocks, one
+   build) is 26.3. Should 1.21.11 with poplar as IGNORE stay the target, or should it move to
+   26.3 (DataVersion 5023)?
 
 Which code is parked, active or excluded:
 [dataset-pipeline.md, Status](dataset-pipeline.md#status-2026-10-11).
