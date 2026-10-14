@@ -109,6 +109,17 @@ pairs       human .schem (target) → coloured surface mesh → synth/degrade.py
     openings at least 3 wide and 2 tall, plus 1 block through smaller ones, plus open gaps.
   - Rooms behind doorways or windows up to 2 wide stay interior, glass or no glass.
   - Big openings into halls are accepted as exterior and flagged `large_opening`.
+  - **Amended 2026-10-14: depth under cover.** Covered exterior air is supervised only near
+    the outside.
+    - Exterior air more than `COVER_DEPTH` = 6 steps from uncovered exterior air becomes
+      interior. Steps are 6-connected, through exterior air; uncovered air has nothing above
+      it, and the grid boundary counts as uncovered.
+    - The shell is taken afterwards.
+    - The audit uses the same depth.
+    - Being covered never on its own makes air interior; only depth does.
+    - Builds where the cap turned more than 200 air voxels interior are flagged
+      `deep_cover_capped`.
+    - Why 6: [real-schems-v1.md](real-schems-v1.md#depth-cap-under-cover-d22-amended-2026-10-14).
 - **D23 (2026-10-12): Ground comes only from natural terrain.**
   - Building materials are never landscape because of their name.
   - When unsure, keep the block: a kept stray block is cheaper than a hole in a building.
@@ -136,6 +147,7 @@ pairs       human .schem (target) → coloured surface mesh → synth/degrade.py
 | 3 (done 2026-10-12, measured; nothing decided) | Normalize: `.litematic` reader, legacy block IDs, crop, vocabulary coverage. **Done:** all 319 non-excluded builds read and validated: 0 failures; dims and the 178 metadata non-air counts all match; 0 unknown legacy ids. Cropped to the building: 48% of non-air blocks were landscape or site; 85 `crop_aggressive`, 18 `multi_building`, 3 `crop_kept_landscape`, 2 `crop_no_core`. Interior masked as ignore: median interior fraction 0.86; 17 `interior_leak_suspect`. Storey height recorded (information only, D15): 142 builds at high/medium confidence, 119 low, 58 unknown. **Vocabulary coverage of supervised blocks (v2): 72.7% exact, 3.2% lossy, 12.2% missing material, 11.2% missing shape, 0.7% decor.** Top 20 materials plus pane, door, trapdoor and upside-down-stair classes would reach 94.7% ([vocab-coverage.md](vocab-coverage.md)). Details: [real-schems-v1.md, Normalization](real-schems-v1.md#normalization-phase-3). The geometric duplicate check (rotation, crop, cross-format) deferred from Phase 2 is **not done yet**: it is now possible, as every build parses |
 | Vocab v3 (done 2026-10-12) | Vocabulary v3 (D20), target version (D21), no scale rule (D15 revised). **Done:** `mcvox-v3` has 30 shapes × 301 materials and 1,210 valid pairs; v2 IDs are unchanged. Every `VALID` decode validates against 1.21.11. Every normalized build now carries training targets (`target_shape` / `target_material` in its npz; IGNORE for interior, decor, unsupported blocks and door upper halves). **Coverage of supervised blocks, v2 → v3: 75.9% → 98.5% representable** (96.15% exact, 2.17% lossy, 0.18% derived, 1.49% IGNORE: 1.48% decor / fluids / snow, 0.015% structural). By split: train 76.6% → 98.4%, val 74.9% → 98.6%, test 69.7% → 99.2% ([vocab-coverage.md](vocab-coverage.md)) |
 | 3 fixes (done 2026-10-12) | Interior/exterior rule (D22), ground detection and crop correctness (D23), dioramas set aside (D24), duplicate check, re-run. **Done:** porches, overhangs and balconies are trained on. Outside-visible but ignored is now median 0.2% (p90 3.2%), against 11.5% (p90 25.5%) before; builds over 25% fell from 34 to 0. Ground per column from natural terrain only: the six ground-bug builds are at 0% below ground (Kaiserthal was 95%). Builds over 15% below ground fell from 15 to 0. The cemetery wall, the gym hall's missing floor and the bakery's frame logs are fixed. Supervised shell blocks are up 52% (+32% in builds without `large_opening`). Duplicate check after the crop: 0 duplicates in 317 builds, no split moves. Splits: train 253 / val 32 / test 32 / excluded 4. v3 coverage 98.44% representable. Flags for review: 69 `large_opening`, 4 `ground_fallback`, 10 `multi_building`, 3 `site_linear_removed`, 8 `crop_kept_landscape`. Details: [real-schems-v1.md](real-schems-v1.md#phase-3-fixes-before-and-after-2026-10-12), [phase3-fixes.md](phase3-fixes.md) |
+| D22 cap (done 2026-10-14) | Depth cap under cover, `COVER_DEPTH` = 6 (normalize-4). **Done:** open halls, hollow facade shells and open ground floors no longer train their insides as facade. The hall set's interior fraction is now 0.79–0.89 (was 0.31–0.48); the brick tenement stays at 0.30, as its hollow is open sky. The porch set's visible-but-ignored stays within +0.2 points. Supervised shell blocks 3.27 M → 2.73 M. `large_opening` 69 → 11; `deep_cover_capped` 108. v3 coverage 98.51% |
 | 4 (next) | Generate pairs (D16); real-TRELLIS check of the synthetic inputs |
 | 5 | torch environment, 3D U-Net, baseline score (D18) |
 
@@ -158,9 +170,9 @@ Still open:
    one target. Should they be one target each, split per building, or set aside? The 4
    `ground_fallback` builds are built into a slope, and the Richelieu cliff house loses the
    rock that formed its rooms' back walls. Keep, re-crop by hand, or set aside?
-2. **`large_opening` builds (69).** Halls, garages, open ground floors and hollow facade
-   shells are now exterior inside, so their inner walls are trained on. Accept, or treat
-   hollow facade-only builds differently?
+2. **Depth cap.** `COVER_DEPTH` = 6 ignores covered exterior air deeper than 6 steps. That
+   includes the middle of big canopies and long covered passages, not only hall interiors.
+   Review the 108 `deep_cover_capped` builds in the gallery.
 3. **Invisible blocks.** `light`, `barrier` and `structure_void` became air. Is that right?
 4. **D21's wording.** No 1.21.x covers every block in the dataset: poplar (87 blocks, one
    build) is 26.3. Should 1.21.11 with poplar as IGNORE stay the target, or should it move to
