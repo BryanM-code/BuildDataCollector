@@ -13,7 +13,7 @@ Two things in one repo:
 Human-built schematics are now the training targets, and each model input is generated from
 its target (schem → coloured mesh → `synth/degrade.py` → voxels at 2x block resolution).
 This reverses the old plan, where Objaverse meshes were the source and `mcvoxel` rules made
-the targets. Source of truth: `docs/mesh-to-schem-plan.md`, Version 4 (D13–D21, phase plan).
+the targets. Source of truth: `docs/mesh-to-schem-plan.md`, Version 4 (D13–D24, phase plan).
 
 ## Parked, not deleted
 

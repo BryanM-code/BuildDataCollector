@@ -29,7 +29,7 @@ pairs       human .schem (target) → coloured surface mesh → synth/degrade.py
 | Location | `data/real-schems-v1/` (local only): read-only `source/` copy plus `index.json`, `splits.json`, `near_duplicates.json`. See [real-schems-v1.md](real-schems-v1.md) |
 | Collected at | `C:\Users\mendo\Documents\Codex\2026-10-05\find-and-download-30-high-quality-2\outputs\Real2Minecraft_Dataset\` (never written to) |
 
-### Decisions (2026-10-11; D15 revised and D20–D21 added 2026-10-12)
+### Decisions (2026-10-11; D15 revised and D20–D24 added 2026-10-12)
 
 - **D13 Data direction: schematic-first.** Human builds are targets, inputs are derived from
   them. The Objaverse synth path is parked (kept, not deleted, possible pretraining source
@@ -96,6 +96,36 @@ pairs       human .schem (target) → coloured surface mesh → synth/degrade.py
   - Block table: Real2Minecraft `mcvoxel/blocktables/blocks_1_21_11.json`, from PrismarineJS
     minecraft-data (MIT; source URL, commit and SHA256 kept in the file).
   - `schem_write` validates against it whenever it writes DataVersion 4671.
+- **D22 (2026-10-12): Exterior includes every open part of the building.** These are part
+  of the building and trained on:
+  - porches and recessed porches, verandas, balconies (recessed ones too), loggias;
+  - arcades, colonnades, carports, canopies;
+  - eaves and soffits, gable undersides, jettied overhangs;
+  - window and door reveals.
+
+  Interior means enclosed rooms only. Being covered from above never, by itself, makes air
+  interior.
+  - Implemented as an opening-size rule (`schemset/interior.py`). The outside reaches through
+    openings at least 3 wide and 2 tall, plus 1 block through smaller ones, plus open gaps.
+  - Rooms behind doorways or windows up to 2 wide stay interior, glass or no glass.
+  - Big openings into halls are accepted as exterior and flagged `large_opening`.
+- **D23 (2026-10-12): Ground comes only from natural terrain.**
+  - Building materials are never landscape because of their name.
+  - When unsure, keep the block: a kept stray block is cheaper than a hole in a building.
+  - Natural terrain is a layered ground mass connected to the bottom and edges of the
+    capture, with natural evidence.
+  - Its surface gives each column a ground height. With no natural terrain around the
+    building there is no ground.
+  - Only blocks genuinely buried below that surface (a foundation course, a basement) are
+    masked as below ground.
+  - If more than 15% of the kept blocks would be, the ground is dropped (`ground_fallback`).
+  - Code: `schemset/crop.py`.
+- **D24 (2026-10-12): The two landscape dioramas are set aside:** split "excluded", flag
+  `excluded_landscape_diorama`.
+  - `pmc-traditional-house-cottage-style`: a forest and a road kept with the house.
+  - `pmc-the-lighthouse-5778696`: a rock island.
+  - Applied in `schemset.freeze.derive` (`SET_ASIDE`) after the seeded split, so no other
+    build moves.
 
 ### Phase plan
 
@@ -105,6 +135,7 @@ pairs       human .schem (target) → coloured surface mesh → synth/degrade.py
 | 2 (done 2026-10-11) | Freeze and dedupe the dataset; reconcile `eval/real-eval-v1.json` (D17). **Done:** 321 builds frozen as [real-schems-v1](real-schems-v1.md) (1,792 files verified); tiers A 43 / B 265 / C 11 / X 2; creator split train 255 / val 32 / test 32 / excluded 2 (216 creator groups, seed 20261011); 0 metadata near-duplicate candidates; `real-eval-v1` superseded (D19) |
 | 3 (done 2026-10-12, measured; nothing decided) | Normalize: `.litematic` reader, legacy block IDs, crop, vocabulary coverage. **Done:** all 319 non-excluded builds read and validated: 0 failures; dims and the 178 metadata non-air counts all match; 0 unknown legacy ids. Cropped to the building: 48% of non-air blocks were landscape or site; 85 `crop_aggressive`, 18 `multi_building`, 3 `crop_kept_landscape`, 2 `crop_no_core`. Interior masked as ignore: median interior fraction 0.86; 17 `interior_leak_suspect`. Storey height recorded (information only, D15): 142 builds at high/medium confidence, 119 low, 58 unknown. **Vocabulary coverage of supervised blocks (v2): 72.7% exact, 3.2% lossy, 12.2% missing material, 11.2% missing shape, 0.7% decor.** Top 20 materials plus pane, door, trapdoor and upside-down-stair classes would reach 94.7% ([vocab-coverage.md](vocab-coverage.md)). Details: [real-schems-v1.md, Normalization](real-schems-v1.md#normalization-phase-3). The geometric duplicate check (rotation, crop, cross-format) deferred from Phase 2 is **not done yet**: it is now possible, as every build parses |
 | Vocab v3 (done 2026-10-12) | Vocabulary v3 (D20), target version (D21), no scale rule (D15 revised). **Done:** `mcvox-v3` has 30 shapes × 301 materials and 1,210 valid pairs; v2 IDs are unchanged. Every `VALID` decode validates against 1.21.11. Every normalized build now carries training targets (`target_shape` / `target_material` in its npz; IGNORE for interior, decor, unsupported blocks and door upper halves). **Coverage of supervised blocks, v2 → v3: 75.9% → 98.5% representable** (96.15% exact, 2.17% lossy, 0.18% derived, 1.49% IGNORE: 1.48% decor / fluids / snow, 0.015% structural). By split: train 76.6% → 98.4%, val 74.9% → 98.6%, test 69.7% → 99.2% ([vocab-coverage.md](vocab-coverage.md)) |
+| 3 fixes (done 2026-10-12) | Interior/exterior rule (D22), ground detection and crop correctness (D23), dioramas set aside (D24), duplicate check, re-run. **Done:** porches, overhangs and balconies are trained on. Outside-visible but ignored is now median 0.2% (p90 3.2%), against 11.5% (p90 25.5%) before; builds over 25% fell from 34 to 0. Ground per column from natural terrain only: the six ground-bug builds are at 0% below ground (Kaiserthal was 95%). Builds over 15% below ground fell from 15 to 0. The cemetery wall, the gym hall's missing floor and the bakery's frame logs are fixed. Supervised shell blocks are up 52% (+32% in builds without `large_opening`). Duplicate check after the crop: 0 duplicates in 317 builds, no split moves. Splits: train 253 / val 32 / test 32 / excluded 4. v3 coverage 98.44% representable. Flags for review: 69 `large_opening`, 4 `ground_fallback`, 10 `multi_building`, 3 `site_linear_removed`, 8 `crop_kept_landscape`. Details: [real-schems-v1.md](real-schems-v1.md#phase-3-fixes-before-and-after-2026-10-12), [phase3-fixes.md](phase3-fixes.md) |
 | 4 (next) | Generate pairs (D16); real-TRELLIS check of the synthetic inputs |
 | 5 | torch environment, 3D U-Net, baseline score (D18) |
 
@@ -116,23 +147,33 @@ Resolved 2026-10-12:
 * storey-height filtering: none (D15 revised)
 * `poplar_fence` / `stripped_poplar_wood`: a Minecraft 26.3 wood, newer than any 1.21.x, so
   IGNORE under D21
+* the interior heuristic: exterior by opening size (D22)
+* below-ground blocks: only genuinely buried blocks, ground from natural terrain only (D23)
+* the two landscape dioramas: set aside (D24)
+* geometric duplicates: checked after the crop, none found
 
 Still open:
 
-1. **Landscape scenes and compounds.** Should builds whose crop kept rock or hill (the
-   lighthouse island, the forest cottage, terraced-slope houses) be kept as they are,
-   re-cropped by hand, or set aside? Should the 18 `multi_building` builds be one target each,
-   split per building, or set aside?
-2. **Interior heuristic.** Recessed porches, garages and inner corners under eaves are
-   ignored. Is that acceptable for training targets?
-3. **Below-ground blocks.** Built blocks below the ground level (253 builds, mostly floors set
-   into the plate) are kept but ignored. Keep that, or cut the targets at the ground?
-4. **Invisible blocks.** `light`, `barrier` and `structure_void` became air. Is that right?
-5. **Geometric duplicates.** Run the rotation/crop/cross-format check now that every build
-   parses (Phase 2 deferred it)?
-6. **D21's wording.** No 1.21.x covers every block in the dataset: poplar (66 blocks, one
+1. **Compounds and slope houses.** Every building of the 10 `multi_building` builds is kept in
+   one target. Should they be one target each, split per building, or set aside? The 4
+   `ground_fallback` builds are built into a slope, and the Richelieu cliff house loses the
+   rock that formed its rooms' back walls. Keep, re-crop by hand, or set aside?
+2. **`large_opening` builds (69).** Halls, garages, open ground floors and hollow facade
+   shells are now exterior inside, so their inner walls are trained on. Accept, or treat
+   hollow facade-only builds differently?
+3. **Invisible blocks.** `light`, `barrier` and `structure_void` became air. Is that right?
+4. **D21's wording.** No 1.21.x covers every block in the dataset: poplar (87 blocks, one
    build) is 26.3. Should 1.21.11 with poplar as IGNORE stay the target, or should it move to
    26.3 (DataVersion 5023)?
+5. **Vocabulary append.** The crop now keeps ore, gravel and blackstone used as building
+   material, so 12 more structural blocks meet D20's data rule (2+ builds or 200+ blocks):
+   - gold, emerald and redstone ore; emerald block
+   - chiseled polished blackstone
+   - suspicious gravel, rooted dirt, red sand
+   - shroomlight, honey block, bee nest, bamboo mosaic
+
+   Together they are 2,602 supervised blocks (0.08%), now IGNORE. Append them to v3?
+   ([vocab-coverage.md](vocab-coverage.md#structural-blocks-still-outside-the-vocabulary))
 
 Which code is parked, active or excluded:
 [dataset-pipeline.md, Status](dataset-pipeline.md#status-2026-10-11).
