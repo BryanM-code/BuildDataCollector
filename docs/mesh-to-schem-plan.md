@@ -148,7 +148,8 @@ pairs       human .schem (target) → coloured surface mesh → synth/degrade.py
 | Vocab v3 (done 2026-10-12) | Vocabulary v3 (D20), target version (D21), no scale rule (D15 revised). **Done:** `mcvox-v3` has 30 shapes × 301 materials and 1,210 valid pairs; v2 IDs are unchanged. Every `VALID` decode validates against 1.21.11. Every normalized build now carries training targets (`target_shape` / `target_material` in its npz; IGNORE for interior, decor, unsupported blocks and door upper halves). **Coverage of supervised blocks, v2 → v3: 75.9% → 98.5% representable** (96.15% exact, 2.17% lossy, 0.18% derived, 1.49% IGNORE: 1.48% decor / fluids / snow, 0.015% structural). By split: train 76.6% → 98.4%, val 74.9% → 98.6%, test 69.7% → 99.2% ([vocab-coverage.md](vocab-coverage.md)) |
 | 3 fixes (done 2026-10-12) | Interior/exterior rule (D22), ground detection and crop correctness (D23), dioramas set aside (D24), duplicate check, re-run. **Done:** porches, overhangs and balconies are trained on. Outside-visible but ignored is now median 0.2% (p90 3.2%), against 11.5% (p90 25.5%) before; builds over 25% fell from 34 to 0. Ground per column from natural terrain only: the six ground-bug builds are at 0% below ground (Kaiserthal was 95%). Builds over 15% below ground fell from 15 to 0. The cemetery wall, the gym hall's missing floor and the bakery's frame logs are fixed. Supervised shell blocks are up 52% (+32% in builds without `large_opening`). Duplicate check after the crop: 0 duplicates in 317 builds, no split moves. Splits: train 253 / val 32 / test 32 / excluded 4. v3 coverage 98.44% representable. Flags for review: 69 `large_opening`, 4 `ground_fallback`, 10 `multi_building`, 3 `site_linear_removed`, 8 `crop_kept_landscape`. Details: [real-schems-v1.md](real-schems-v1.md#phase-3-fixes-before-and-after-2026-10-12), [phase3-fixes.md](phase3-fixes.md) |
 | D22 cap (done 2026-10-14) | Depth cap under cover, `COVER_DEPTH` = 6 (normalize-4). **Done:** open halls, hollow facade shells and open ground floors no longer train their insides as facade. The hall set's interior fraction is now 0.79–0.89 (was 0.31–0.48); the brick tenement stays at 0.30, as its hollow is open sky. The porch set's visible-but-ignored stays within +0.2 points. Supervised shell blocks 3.27 M → 2.73 M. `large_opening` 69 → 11; `deep_cover_capped` 108. v3 coverage 98.51% |
-| 4 (done 2026-10-14; real-TRELLIS set awaiting the server) | Generate pairs (D16); real-TRELLIS check of the synthetic inputs. **Done:** 317 builds → **1,268 pairs** (4 variants each; train 1,012 / val 128 / test 128), **0 rejected**, 0 builds failed; 283 MB, 23.5 min on 6 workers. Input = the build's outside only (`schemset.meshify`: real 1/16 block geometry, no interior, no ground plate) → ±5° yaw / ±0.5 block offset → `synth.degrade` → voxelised at 2× in exactly the target frame. Block-level IoU with the target volume p5 / p50 / p95 0.54 / 0.77 / 0.88; frame residual against the clean placed reference ≤ 1.16 cells; 26 pairs in 9 builds kept and flagged `low_iou` (blobs bigger than open or sprawling builds). Domain-gap guard: unsmoothed inputs were blockier than real TRELLIS, so the bottleneck blur got a 1-block floor (σ 0.42); size-matched, stair45 0.21 vs 0.25 and roughness 7.8° vs 8.1°. Colour does not match: synthetic L* 46 vs 22. Real-TRELLIS set: 25 val/test builds chosen and rendered; TRELLIS server down. Format and loader contract: [pairs-v1.md](pairs-v1.md) |
+| 4 (done 2026-10-14) | Generate pairs (D16); real-TRELLIS check of the synthetic inputs. **Done:** 317 builds → **1,268 pairs** (4 variants each; train 1,012 / val 128 / test 128), **0 rejected**, 0 builds failed; 283 MB, 23.5 min on 6 workers. Input = the build's outside only (`schemset.meshify`: real 1/16 block geometry, no interior, no ground plate) → ±5° yaw / ±0.5 block offset → `synth.degrade` → voxelised at 2× in exactly the target frame. Block-level IoU with the target volume p5 / p50 / p95 0.54 / 0.77 / 0.88; frame residual against the clean placed reference ≤ 1.16 cells; 26 pairs in 9 builds kept and flagged `low_iou` (blobs bigger than open or sprawling builds). Domain-gap guard: unsmoothed inputs were blockier than real TRELLIS, so the bottleneck blur got a 1-block floor (σ 0.42); size-matched, stair45 0.21 vs 0.25 and roughness 7.8° vs 8.1°. Colour does not match: synthetic L* 46 vs 22. Real-TRELLIS set: 25 val/test builds chosen and rendered; TRELLIS server down. Format and loader contract: [pairs-v1.md](pairs-v1.md) |
+| 4 follow-up (done 2026-10-15) | Colour recalibration, real-TRELLIS eval sets, eval alignment. **Done:** **pairs-2**, 1,268 pairs regenerated (27.6 min, 279 MB, geometry identical to pairs-1: seeds frozen). The colour model is fitted to TRELLIS on real photos: log-uniform exposure, a directional sun, muted chroma, dark cool glass. L\* p10 / p50 / p90 went from 34 / 46 / 63 to **12 / 22 / 37** (reference 11 / 22 / 34, 78% inside its band); C\* p50 from 10.8 to **6.0** (reference 6.7, 79% inside). Real-TRELLIS eval on 25 val/test builds, two sets: **smooth photos** (the main set; σ 0.6 chosen by trials) give TRELLIS stair45 0.22 and roughness 7.7°, like TRELLIS on real photos (0.25 / 8.1°); **blocky photos** (the stress test) give 0.88 / 18.4°. Eval alignment (±16-cell shift search, centred where the validator measures, voxelised once and cropped): misaligned 16 → **0**, residual p90 4.0 → 0.47 cells; 1 build fails in both sets because TRELLIS misses most of it. [pairs-v1.md](pairs-v1.md) |
 | 5 | torch environment, 3D U-Net, baseline score (D18) |
 
 Open questions (for you; nothing below is decided).
@@ -186,20 +187,20 @@ Still open:
 
    Together they are 2,602 supervised blocks (0.08%), now IGNORE. Append them to v3?
    ([vocab-coverage.md](vocab-coverage.md#structural-blocks-still-outside-the-vocabulary))
-6. **Input colour (Phase 4).** Synthetic inputs are about 24 L* brighter and 1.5× more
-   colourful than TRELLIS's bakes of real photos (L* p50 46 vs 22, C* 10.3 vs 6.7). The cause
-   is flat, unshaded thumbnail colours, while `degrade`'s darkening was tuned for shaded
-   Objaverse textures. Options:
-   - retune the degrade colour ranges for this dataset and regenerate (about 25 min);
-   - normalise lightness per input in the loader and at inference;
-   - wait for the real-TRELLIS set's paired numbers.
+6. **Eval-photo colour.** Input colour itself is resolved in pairs-2 (synthetic L\* p50 22, the
+   same as TRELLIS on real photos). The real-TRELLIS eval photos, though, are renders in flat
+   thumbnail colours, and TRELLIS bakes them bright (L\* 39–44). Options:
+   - score materials on the eval sets knowing that;
+   - normalise lightness per input, the same at inference;
+   - render the eval photos with realistic exposure.
 
-   ([pairs-v1.md](pairs-v1.md#calibration-against-trellis))
+   ([pairs-v1.md](pairs-v1.md#trellis-statistics-per-set-p10--p50--p90))
 7. **`low_iou` pairs.** 26 pairs in 9 builds are kept and flagged. The input blob is far
    bigger than the build: open barns, a sprawling colonial complex, the 9-storey Yaroslavl
    block. Keep them, down-weight them, or hold them out of training?
-8. **Real-TRELLIS set.** Start `C:\TRELLIS\run.bat`, then run `schemset.real_trellis generate`
-   and `place` to get the paired gap report on 25 val/test builds.
+8. **Real-photo replica set.** Ten candidate builds have free-licence Wikimedia Commons photos
+   identified; three of them are in test or val. Approve the downloads
+   ([pairs-v1.md](pairs-v1.md#real-photo-replica-set-optional-pending))?
 
 Which code is parked, active or excluded:
 [dataset-pipeline.md, Status](dataset-pipeline.md#status-2026-10-11).
