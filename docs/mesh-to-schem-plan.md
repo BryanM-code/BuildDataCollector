@@ -150,6 +150,7 @@ pairs       human .schem (target) → coloured surface mesh → synth/degrade.py
 | D22 cap (done 2026-10-14) | Depth cap under cover, `COVER_DEPTH` = 6 (normalize-4). **Done:** open halls, hollow facade shells and open ground floors no longer train their insides as facade. The hall set's interior fraction is now 0.79–0.89 (was 0.31–0.48); the brick tenement stays at 0.30, as its hollow is open sky. The porch set's visible-but-ignored stays within +0.2 points. Supervised shell blocks 3.27 M → 2.73 M. `large_opening` 69 → 11; `deep_cover_capped` 108. v3 coverage 98.51% |
 | 4 (done 2026-10-14) | Generate pairs (D16); real-TRELLIS check of the synthetic inputs. **Done:** 317 builds → **1,268 pairs** (4 variants each; train 1,012 / val 128 / test 128), **0 rejected**, 0 builds failed; 283 MB, 23.5 min on 6 workers. Input = the build's outside only (`schemset.meshify`: real 1/16 block geometry, no interior, no ground plate) → ±5° yaw / ±0.5 block offset → `synth.degrade` → voxelised at 2× in exactly the target frame. Block-level IoU with the target volume p5 / p50 / p95 0.54 / 0.77 / 0.88; frame residual against the clean placed reference ≤ 1.16 cells; 26 pairs in 9 builds kept and flagged `low_iou` (blobs bigger than open or sprawling builds). Domain-gap guard: unsmoothed inputs were blockier than real TRELLIS, so the bottleneck blur got a 1-block floor (σ 0.42); size-matched, stair45 0.21 vs 0.25 and roughness 7.8° vs 8.1°. Colour does not match: synthetic L* 46 vs 22. Real-TRELLIS set: 25 val/test builds chosen and rendered; TRELLIS server down. Format and loader contract: [pairs-v1.md](pairs-v1.md) |
 | 4 follow-up (done 2026-10-15) | Colour recalibration, real-TRELLIS eval sets, eval alignment. **Done:** **pairs-2**, 1,268 pairs regenerated (27.6 min, 279 MB, geometry identical to pairs-1: seeds frozen). The colour model is fitted to TRELLIS on real photos: log-uniform exposure, a directional sun, muted chroma, dark cool glass. L\* p10 / p50 / p90 went from 34 / 46 / 63 to **12 / 22 / 37** (reference 11 / 22 / 34, 78% inside its band); C\* p50 from 10.8 to **6.0** (reference 6.7, 79% inside). Real-TRELLIS eval on 25 val/test builds, two sets: **smooth photos** (the main set; σ 0.6 chosen by trials) give TRELLIS stair45 0.22 and roughness 7.7°, like TRELLIS on real photos (0.25 / 8.1°); **blocky photos** (the stress test) give 0.88 / 18.4°. Eval alignment (±16-cell shift search, centred where the validator measures, voxelised once and cropped): misaligned 16 → **0**, residual p90 4.0 → 0.47 cells; 1 build fails in both sets because TRELLIS misses most of it. [pairs-v1.md](pairs-v1.md) |
+| 4 follow-up 2 (done 2026-10-16) | Everything verified before training. **Done:** **normalize-5** fixes Hotel Piran's missing walls: D22's depth cap counted depth from *uncovered* air, so the air under a deep, tall eave read as interior; it now counts from open air (covered air with a line out that sees the sky along a 2:1 path). 153 builds' masks changed, supervised shell +2.7%, the hall set stays capped; a new depth-free audit flags 5 crawl-space builds (`deep_visible_ignored`); 2 regression tests. **pairs-3**, 1,268 pairs regenerated (0 rejected): the colour model has TRELLIS's structure (a lit side, a near-black unseen side and roofs, blotches, smears, regional hue drift) and its exposure (a mean L\* drawn per variant, L\* scaled, chroma kept). Against TRELLIS on real photos: L\* **11.7 / 21.6 / 37.4** (11.0 / 21.9 / 33.7, 73.5% inside), C\* 3.5 / 7.1 / 12.0 (2.8 / 6.7 / 11.6), nbr ΔE 1.49 / 2.97 / **5.17** (1.53 / 2.48 / 4.99; pairs-2 p90 3.53); blockiness unchanged (stair45 0.20, roughness 7.5°). Detail metric (`schemset.detail`): synthetic keeps more detail than TRELLIS (feature recall 0.57 against 0.39) and makes up less (spurious 0.13 against 0.34). Smooth eval photos lit with hard sun: TRELLIS L\* p50 44 → 24. Gallery with raw TRELLIS beside each voxelised input and a real-photo section. Real photos end to end: the barn and 9 Commons replicas (IoU 0.08–0.84); they sit alongside the render sets. Calibration reference frozen (sha256). `low_iou` pairs kept (31 in 11 builds), metrics with and without. BDC suite 459 tests. [pairs-v1.md](pairs-v1.md) |
 | 5 | torch environment, 3D U-Net, baseline score (D18) |
 
 Open questions (for you; nothing below is decided).
@@ -165,15 +166,26 @@ Resolved 2026-10-12:
 * the two landscape dioramas: set aside (D24)
 * geometric duplicates: checked after the crop, none found
 
+Resolved 2026-10-16 (Phase 4 follow-up 2):
+
+* eval-photo colour: the smooth eval photos are lit with hard sun, and TRELLIS's output on them
+  now matches TRELLIS on real photos in lightness (L\* p50 23.7 against 21.9); the blocky set
+  stays bright, as a stress test
+* the real-photo replica set: approved, downloaded and run end to end (the barn and nine
+  Commons photos); it sits alongside the render sets
+  ([pairs-v1.md](pairs-v1.md#real-photos-end-to-end-schemsetreal_photo))
+
 Still open:
 
 1. **Compounds and slope houses.** Every building of the 10 `multi_building` builds is kept in
    one target. Should they be one target each, split per building, or set aside? The 4
    `ground_fallback` builds are built into a slope, and the Richelieu cliff house loses the
    rock that formed its rooms' back walls. Keep, re-crop by hand, or set aside?
-2. **Depth cap.** `COVER_DEPTH` = 6 ignores covered exterior air deeper than 6 steps. That
-   includes the middle of big canopies and long covered passages, not only hall interiors.
-   Review the 108 `deep_cover_capped` builds in the gallery.
+2. **Depth cap.** `COVER_DEPTH` = 6 ignores covered exterior air deeper than 6 steps from
+   open air (since normalize-5, covered air that sees the sky along a 2:1 path counts as open,
+   which fixed Hotel Piran's facades). That still includes the middle of big canopies and long
+   covered passages, not only hall interiors. Review the 92 `deep_cover_capped` builds in the
+   gallery; the 5 `deep_visible_ignored` builds have ignored crawl spaces.
 3. **Invisible blocks.** `light`, `barrier` and `structure_void` became air. Is that right?
 4. **D21's wording.** No 1.21.x covers every block in the dataset: poplar (87 blocks, one
    build) is 26.3. Should 1.21.11 with poplar as IGNORE stay the target, or should it move to
@@ -187,20 +199,19 @@ Still open:
 
    Together they are 2,602 supervised blocks (0.08%), now IGNORE. Append them to v3?
    ([vocab-coverage.md](vocab-coverage.md#structural-blocks-still-outside-the-vocabulary))
-6. **Eval-photo colour.** Input colour itself is resolved in pairs-2 (synthetic L\* p50 22, the
-   same as TRELLIS on real photos). The real-TRELLIS eval photos, though, are renders in flat
-   thumbnail colours, and TRELLIS bakes them bright (L\* 39–44). Options:
-   - score materials on the eval sets knowing that;
-   - normalise lightness per input, the same at inference;
-   - render the eval photos with realistic exposure.
-
-   ([pairs-v1.md](pairs-v1.md#trellis-statistics-per-set-p10--p50--p90))
-7. **`low_iou` pairs.** 26 pairs in 9 builds are kept and flagged. The input blob is far
-   bigger than the build: open barns, a sprawling colonial complex, the 9-storey Yaroslavl
-   block. Keep them, down-weight them, or hold them out of training?
-8. **Real-photo replica set.** Ten candidate builds have free-licence Wikimedia Commons photos
-   identified; three of them are in test or val. Approve the downloads
-   ([pairs-v1.md](pairs-v1.md#real-photo-replica-set-optional-pending))?
+6. **`low_iou` pairs.** 31 pairs in 11 builds (pairs-3) are kept in training: input blobs far
+   bigger than the build (open barns, a sprawling colonial complex, the 9-storey Yaroslavl
+   block, and since normalize-5 a gas-station canopy and a fire-lookout platform, whose open
+   air is now supervised). Every Phase 5 metric is reported with and without them
+   (`pairs.metric_subsets`). Down-weight them?
+7. **Colour detail.** The synthetic inputs' colours follow the build more closely than
+   TRELLIS's (colour detail 0.28 against 0.14 on the same builds). Push the smears and hue
+   drift further, or leave it so the colours stay a usable signal?
+8. **TRELLIS behaviour the inputs lack**: clutter kept as building (vines, hay, the cutout's
+   ground fringe), the unseen half completed by symmetry, spurious geometry (spurious 0.34
+   against 0.14). Model them, or leave them to the real-photo checks?
+9. **The calibration reference is narrow**: 11 images, one house photo is 21 of its 50 meshes.
+   Grow it with more real photos run through the app?
 
 Which code is parked, active or excluded:
 [dataset-pipeline.md, Status](dataset-pipeline.md#status-2026-10-11).
