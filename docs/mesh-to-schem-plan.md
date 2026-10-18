@@ -29,7 +29,7 @@ pairs       human .schem (target) → coloured surface mesh → synth/degrade.py
 | Location | `data/real-schems-v1/` (local only): read-only `source/` copy plus `index.json`, `splits.json`, `near_duplicates.json`. See [real-schems-v1.md](real-schems-v1.md) |
 | Collected at | `C:\Users\mendo\Documents\Codex\2026-10-05\find-and-download-30-high-quality-2\outputs\Real2Minecraft_Dataset\` (never written to) |
 
-### Decisions (2026-10-11; D15 revised and D20–D24 added 2026-10-12)
+### Decisions (2026-10-11; D15 revised and D20–D24 added 2026-10-12; D20 amended and D25 added 2026-10-17)
 
 - **D13 Data direction: schematic-first.** Human builds are targets, inputs are derived from
   them. The Objaverse synth path is parked (kept, not deleted, possible pretraining source
@@ -73,9 +73,17 @@ pairs       human .schem (target) → coloured surface mesh → synth/degrade.py
   builds are expressed faithfully, including every texture variant (wood species, glass
   colours, stone variants).
   - Factored shape × material. A material is a texture family, and a `VALID[shape,
-    material]` table records which pairs exist: 30 shapes × 301 materials, 1,210 valid
+    material]` table records which pairs exist: 30 shapes × 313 materials, 1,232 valid
     pairs.
   - Append-only: v2's shape and material IDs are unchanged and v2 targets still decode.
+  - Amended 2026-10-17 (before any training): the 12 building materials the Phase 3 re-crop
+    kept, which met the data rule then (gold, emerald and redstone ore, emerald block,
+    chiseled polished blackstone, suspicious gravel, rooted dirt, red sand, shroomlight,
+    honey block, bee nest, bamboo mosaic), are appended as IDs 301–312 (mcvoxel 0.6.1).
+    The name stays `mcvox-v3`; every earlier ID and pair is unchanged. On normalize-5's
+    targets they hold 1,870 supervised blocks and nine still meet the rule: shroomlight (no
+    supervised block), redstone ore (7 blocks) and honey block (2), one build each, no longer
+    do. Representable supervised blocks: 98.51% → 98.58%.
   - New shapes: upside-down stairs, pane, closed and open trapdoors, the lower door half,
     horizontal pillars, fence gates and carpet.
   - The model predicts only what the game cannot derive. Stair corners, connections, door
@@ -137,6 +145,12 @@ pairs       human .schem (target) → coloured surface mesh → synth/degrade.py
   - `pmc-the-lighthouse-5778696`: a rock island.
   - Applied in `schemset.freeze.derive` (`SET_ASIDE`) after the seeded split, so no other
     build moves.
+- **D25 (2026-10-17): The Richelieu cliff house is set aside** (`pmc-richelieu-contemporary`,
+  was test): split "excluded", flag `excluded_target_lost_terrain`. Its rooms are dug into
+  rock; the crop finds no natural terrain (`ground_fallback`), removes the rock that formed
+  the rooms' back walls, and the target opens them up. The other three `ground_fallback`
+  builds (all train) and the 10 `multi_building` compounds are kept as they are. Applied
+  like D24, so no other build moves: test 32 → 31.
 
 ### Phase plan
 
@@ -151,6 +165,7 @@ pairs       human .schem (target) → coloured surface mesh → synth/degrade.py
 | 4 (done 2026-10-14) | Generate pairs (D16); real-TRELLIS check of the synthetic inputs. **Done:** 317 builds → **1,268 pairs** (4 variants each; train 1,012 / val 128 / test 128), **0 rejected**, 0 builds failed; 283 MB, 23.5 min on 6 workers. Input = the build's outside only (`schemset.meshify`: real 1/16 block geometry, no interior, no ground plate) → ±5° yaw / ±0.5 block offset → `synth.degrade` → voxelised at 2× in exactly the target frame. Block-level IoU with the target volume p5 / p50 / p95 0.54 / 0.77 / 0.88; frame residual against the clean placed reference ≤ 1.16 cells; 26 pairs in 9 builds kept and flagged `low_iou` (blobs bigger than open or sprawling builds). Domain-gap guard: unsmoothed inputs were blockier than real TRELLIS, so the bottleneck blur got a 1-block floor (σ 0.42); size-matched, stair45 0.21 vs 0.25 and roughness 7.8° vs 8.1°. Colour does not match: synthetic L* 46 vs 22. Real-TRELLIS set: 25 val/test builds chosen and rendered; TRELLIS server down. Format and loader contract: [pairs-v1.md](pairs-v1.md) |
 | 4 follow-up (done 2026-10-15) | Colour recalibration, real-TRELLIS eval sets, eval alignment. **Done:** **pairs-2**, 1,268 pairs regenerated (27.6 min, 279 MB, geometry identical to pairs-1: seeds frozen). The colour model is fitted to TRELLIS on real photos: log-uniform exposure, a directional sun, muted chroma, dark cool glass. L\* p10 / p50 / p90 went from 34 / 46 / 63 to **12 / 22 / 37** (reference 11 / 22 / 34, 78% inside its band); C\* p50 from 10.8 to **6.0** (reference 6.7, 79% inside). Real-TRELLIS eval on 25 val/test builds, two sets: **smooth photos** (the main set; σ 0.6 chosen by trials) give TRELLIS stair45 0.22 and roughness 7.7°, like TRELLIS on real photos (0.25 / 8.1°); **blocky photos** (the stress test) give 0.88 / 18.4°. Eval alignment (±16-cell shift search, centred where the validator measures, voxelised once and cropped): misaligned 16 → **0**, residual p90 4.0 → 0.47 cells; 1 build fails in both sets because TRELLIS misses most of it. [pairs-v1.md](pairs-v1.md) |
 | 4 follow-up 2 (done 2026-10-16) | Everything verified before training. **Done:** **normalize-5** fixes Hotel Piran's missing walls: D22's depth cap counted depth from *uncovered* air, so the air under a deep, tall eave read as interior; it now counts from open air (covered air with a line out that sees the sky along a 2:1 path). 153 builds' masks changed, supervised shell +2.7%, the hall set stays capped; a new depth-free audit flags 5 crawl-space builds (`deep_visible_ignored`); 2 regression tests. **pairs-3**, 1,268 pairs regenerated (0 rejected): the colour model has TRELLIS's structure (a lit side, a near-black unseen side and roofs, blotches, smears, regional hue drift) and its exposure (a mean L\* drawn per variant, L\* scaled, chroma kept). Against TRELLIS on real photos: L\* **11.7 / 21.6 / 37.4** (11.0 / 21.9 / 33.7, 73.5% inside), C\* 3.5 / 7.1 / 12.0 (2.8 / 6.7 / 11.6), nbr ΔE 1.49 / 2.97 / **5.17** (1.53 / 2.48 / 4.99; pairs-2 p90 3.53); blockiness unchanged (stair45 0.20, roughness 7.5°). Detail metric (`schemset.detail`): synthetic keeps more detail than TRELLIS (feature recall 0.57 against 0.39) and makes up less (spurious 0.13 against 0.34). Smooth eval photos lit with hard sun: TRELLIS L\* p50 44 → 24. Gallery with raw TRELLIS beside each voxelised input and a real-photo section. Real photos end to end: the barn and 9 Commons replicas (IoU 0.08–0.84); they sit alongside the render sets. Calibration reference frozen (sha256). `low_iou` pairs kept (31 in 11 builds), metrics with and without. BDC suite 459 tests. [pairs-v1.md](pairs-v1.md) |
+| Pre-Phase 5 (done 2026-10-17) | The target-changing decisions settled before training. **Done:** vocabulary append (D20 amended): 12 materials as IDs 301–312, `mcvox-v3` now 30 shapes × 313 materials and 1,232 valid pairs (mcvoxel 0.6.1, every earlier ID frozen by a fixture); representable supervised blocks 98.51% → **98.58%** on the same 316 builds. **D25:** the Richelieu cliff house set aside (test 32 → 31); the compounds and the other hillside builds kept. Re-normalized (316 ok); 20 builds' targets changed and their pairs were rebuilt with identical inputs; **1,264 pairs** (train 1,012 / val 128 / test 124), 0 rejected; the colour model still accepted (L\* 73.5% inside). Real2Minecraft's bar: 103 tests, GOLDEN CLEAN (45 files), sculpture block histograms identical on all 53 cached meshes. [vocab-coverage.md](vocab-coverage.md) |
 | 5 | torch environment, 3D U-Net, baseline score (D18) |
 
 Open questions (for you; nothing below is decided).
@@ -175,42 +190,35 @@ Resolved 2026-10-16 (Phase 4 follow-up 2):
   Commons photos); it sits alongside the render sets
   ([pairs-v1.md](pairs-v1.md#real-photos-end-to-end-schemsetreal_photo))
 
+Resolved 2026-10-17 (before Phase 5):
+
+* compounds and slope houses: the 10 `multi_building` builds stay one target each; the
+  Richelieu cliff house is set aside (D25); the other three `ground_fallback` builds stay
+* the vocabulary append: the 12 materials are appended to `mcvox-v3` (D20 amended)
+
 Still open:
 
-1. **Compounds and slope houses.** Every building of the 10 `multi_building` builds is kept in
-   one target. Should they be one target each, split per building, or set aside? The 4
-   `ground_fallback` builds are built into a slope, and the Richelieu cliff house loses the
-   rock that formed its rooms' back walls. Keep, re-crop by hand, or set aside?
-2. **Depth cap.** `COVER_DEPTH` = 6 ignores covered exterior air deeper than 6 steps from
+1. **Depth cap.** `COVER_DEPTH` = 6 ignores covered exterior air deeper than 6 steps from
    open air (since normalize-5, covered air that sees the sky along a 2:1 path counts as open,
    which fixed Hotel Piran's facades). That still includes the middle of big canopies and long
-   covered passages, not only hall interiors. Review the 92 `deep_cover_capped` builds in the
+   covered passages, not only hall interiors. Review the 91 `deep_cover_capped` builds in the
    gallery; the 5 `deep_visible_ignored` builds have ignored crawl spaces.
-3. **Invisible blocks.** `light`, `barrier` and `structure_void` became air. Is that right?
-4. **D21's wording.** No 1.21.x covers every block in the dataset: poplar (87 blocks, one
+2. **Invisible blocks.** `light`, `barrier` and `structure_void` became air. Is that right?
+3. **D21's wording.** No 1.21.x covers every block in the dataset: poplar (87 blocks, one
    build) is 26.3. Should 1.21.11 with poplar as IGNORE stay the target, or should it move to
    26.3 (DataVersion 5023)?
-5. **Vocabulary append.** The crop now keeps ore, gravel and blackstone used as building
-   material, so 12 more structural blocks meet D20's data rule (2+ builds or 200+ blocks):
-   - gold, emerald and redstone ore; emerald block
-   - chiseled polished blackstone
-   - suspicious gravel, rooted dirt, red sand
-   - shroomlight, honey block, bee nest, bamboo mosaic
-
-   Together they are 2,602 supervised blocks (0.08%), now IGNORE. Append them to v3?
-   ([vocab-coverage.md](vocab-coverage.md#structural-blocks-still-outside-the-vocabulary))
-6. **`low_iou` pairs.** 31 pairs in 11 builds (pairs-3) are kept in training: input blobs far
+4. **`low_iou` pairs.** 31 pairs in 11 builds (pairs-3) are kept in training: input blobs far
    bigger than the build (open barns, a sprawling colonial complex, the 9-storey Yaroslavl
    block, and since normalize-5 a gas-station canopy and a fire-lookout platform, whose open
    air is now supervised). Every Phase 5 metric is reported with and without them
    (`pairs.metric_subsets`). Down-weight them?
-7. **Colour detail.** The synthetic inputs' colours follow the build more closely than
+5. **Colour detail.** The synthetic inputs' colours follow the build more closely than
    TRELLIS's (colour detail 0.28 against 0.14 on the same builds). Push the smears and hue
    drift further, or leave it so the colours stay a usable signal?
-8. **TRELLIS behaviour the inputs lack**: clutter kept as building (vines, hay, the cutout's
+6. **TRELLIS behaviour the inputs lack**: clutter kept as building (vines, hay, the cutout's
    ground fringe), the unseen half completed by symmetry, spurious geometry (spurious 0.34
    against 0.14). Model them, or leave them to the real-photo checks?
-9. **The calibration reference is narrow**: 11 images, one house photo is 21 of its 50 meshes.
+7. **The calibration reference is narrow**: 11 images, one house photo is 21 of its 50 meshes.
    Grow it with more real photos run through the app?
 
 Which code is parked, active or excluded:
