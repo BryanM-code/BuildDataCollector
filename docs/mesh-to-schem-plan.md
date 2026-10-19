@@ -166,7 +166,47 @@ pairs       human .schem (target) → coloured surface mesh → synth/degrade.py
 | 4 follow-up (done 2026-10-15) | Colour recalibration, real-TRELLIS eval sets, eval alignment. **Done:** **pairs-2**, 1,268 pairs regenerated (27.6 min, 279 MB, geometry identical to pairs-1: seeds frozen). The colour model is fitted to TRELLIS on real photos: log-uniform exposure, a directional sun, muted chroma, dark cool glass. L\* p10 / p50 / p90 went from 34 / 46 / 63 to **12 / 22 / 37** (reference 11 / 22 / 34, 78% inside its band); C\* p50 from 10.8 to **6.0** (reference 6.7, 79% inside). Real-TRELLIS eval on 25 val/test builds, two sets: **smooth photos** (the main set; σ 0.6 chosen by trials) give TRELLIS stair45 0.22 and roughness 7.7°, like TRELLIS on real photos (0.25 / 8.1°); **blocky photos** (the stress test) give 0.88 / 18.4°. Eval alignment (±16-cell shift search, centred where the validator measures, voxelised once and cropped): misaligned 16 → **0**, residual p90 4.0 → 0.47 cells; 1 build fails in both sets because TRELLIS misses most of it. [pairs-v1.md](pairs-v1.md) |
 | 4 follow-up 2 (done 2026-10-16) | Everything verified before training. **Done:** **normalize-5** fixes Hotel Piran's missing walls: D22's depth cap counted depth from *uncovered* air, so the air under a deep, tall eave read as interior; it now counts from open air (covered air with a line out that sees the sky along a 2:1 path). 153 builds' masks changed, supervised shell +2.7%, the hall set stays capped; a new depth-free audit flags 5 crawl-space builds (`deep_visible_ignored`); 2 regression tests. **pairs-3**, 1,268 pairs regenerated (0 rejected): the colour model has TRELLIS's structure (a lit side, a near-black unseen side and roofs, blotches, smears, regional hue drift) and its exposure (a mean L\* drawn per variant, L\* scaled, chroma kept). Against TRELLIS on real photos: L\* **11.7 / 21.6 / 37.4** (11.0 / 21.9 / 33.7, 73.5% inside), C\* 3.5 / 7.1 / 12.0 (2.8 / 6.7 / 11.6), nbr ΔE 1.49 / 2.97 / **5.17** (1.53 / 2.48 / 4.99; pairs-2 p90 3.53); blockiness unchanged (stair45 0.20, roughness 7.5°). Detail metric (`schemset.detail`): synthetic keeps more detail than TRELLIS (feature recall 0.57 against 0.39) and makes up less (spurious 0.13 against 0.34). Smooth eval photos lit with hard sun: TRELLIS L\* p50 44 → 24. Gallery with raw TRELLIS beside each voxelised input and a real-photo section. Real photos end to end: the barn and 9 Commons replicas (IoU 0.08–0.84); they sit alongside the render sets. Calibration reference frozen (sha256). `low_iou` pairs kept (31 in 11 builds), metrics with and without. BDC suite 459 tests. [pairs-v1.md](pairs-v1.md) |
 | Pre-Phase 5 (done 2026-10-17) | The target-changing decisions settled before training. **Done:** vocabulary append (D20 amended): 12 materials as IDs 301–312, `mcvox-v3` now 30 shapes × 313 materials and 1,232 valid pairs (mcvoxel 0.6.1, every earlier ID frozen by a fixture); representable supervised blocks 98.51% → **98.58%** on the same 316 builds. **D25:** the Richelieu cliff house set aside (test 32 → 31); the compounds and the other hillside builds kept. Re-normalized (316 ok); 20 builds' targets changed and their pairs were rebuilt with identical inputs; **1,264 pairs** (train 1,012 / val 128 / test 124), 0 rejected; the colour model still accepted (L\* 73.5% inside). Real2Minecraft's bar: 103 tests, GOLDEN CLEAN (45 files), sculpture block histograms identical on all 53 cached meshes. [vocab-coverage.md](vocab-coverage.md) |
-| 5 | torch environment, 3D U-Net, baseline score (D18) |
+| 5 (started 2026-10-17) | Torch environment, scoring, the D18 baseline, loader, 3D U-Net, first runs. Revised plan: [Phase 5](#phase-5-revised-2026-10-17); results: [phase5.md](phase5.md). **So far:** baseline scored on all evaluation sets (smooth val: building IoU 0.20, sculpture 0.32, under 2% exact blocks); smoke test exact; r1's best (step 4,000) matches sculpture on geometry (IoU 0.31, F1 within a block 0.79) and beats both modes on exact blocks (0.030 vs 0.010) and materials (0.079 vs 0.056). r2 (augmentation, softer shape weights) is not better (selection 0.291 vs 0.304): it trades geometry for shape accuracy. r3 (2026-10-18: TRELLIS's own output for the 253 train builds mixed into training) is not better either: equal to r1 within the noise. Bottlenecks now: the geometry is the input's (the input's own occupancy, taken as the prediction, scores as much as every run and sculpture mode: IoU 0.32 on real TRELLIS input, 0.50 on synthetic, so the synthetic-to-TRELLIS gap is the inputs' own; 98–99% of the false blocks lie inside the input's solid, and no solid/air threshold helps), evaluation noise (12 real-TRELLIS val builds, 95% intervals ±0.02 IoU), memorisation (every run peaks by 6,000 steps), synthetic inputs that keep too much of the build (89% of its solid against TRELLIS's 71%), rare shapes |
+
+### Phase 5 (revised 2026-10-17)
+
+The earlier outline (a torch environment; loader, model and loop from section 8 at 64³; the
+baseline measured first on the test split) holds, with these changes for the setup as it is
+now:
+
+1. **Environment.** A third environment, `r2m_train` (Python 3.10, PyTorch 2.11 + CUDA 12.8),
+   beside the app's `r2m_app` and TRELLIS's bundle. The code lives in Real2Minecraft
+   `training/` (its CLAUDE.md reserves the folder for offline training tooling; the app
+   never imports it). Runs and checkpoints go to `data/real-schems-v1/runs/` here: weights
+   trained on tier B / C builds stay local (D14).
+2. **One scorer for the model and the baseline** (`training/score.py`), new: over the
+   supervised voxels only, geometry IoU / F1 and F1 within one block; exact shape and
+   material on voxels solid in both; the CIELAB difference of the two materials' colours, so
+   a near-miss costs less than a wrong colour; exact blocks.
+3. **The baseline before training, on real TRELLIS meshes** (`training/baseline.py`),
+   changed: building mode needs a mesh, and the synthetic pairs keep only voxels, so the
+   baseline runs on the real-TRELLIS evaluation sets (smooth, blocky) and the real photos,
+   through the app's own path, at the scale the model's input has, then is put into the
+   target's frame (a quarter turn and a shift) and scored. Sculpture mode is scored too.
+4. **Loader** (`training/data.py`): the pairs-v1 contract, from a memory-mapped cache
+   (13 GB; a large pair's input is 400 MB unpacked). Section 8 updated: targets are
+   mcvox-v3 (30 shapes × 313 materials, not 8 × 120); the input is the 2× grid (128³ for a
+   64³ target window); "height" is the cell's y counted from the grid's floor, not the
+   ground height, which is unknown at inference.
+5. **Model and loop** (`training/model.py`, `train.py`): a space-to-depth stem (each block's
+   8 cells become channels, so sub-block detail reaches the first convolution), a 4-level
+   residual U-Net (7.2 M parameters, 0.44 s per step of 8 windows), a shape head at every
+   block and a material head only at supervised solid voxels (313 classes everywhere would
+   cost gigabytes). Validation on whole val builds through the app's tiling
+   (`training/predict.py`): synthetic val and the real-TRELLIS smooth val builds. Test is
+   scored once, at the end.
+6. **First runs:** a smoke test (overfit two builds; done: exact), then r1 (20,000 steps),
+   then the comparison that shows the bottlenecks: synthetic val, real-TRELLIS val and the
+   baseline on the same builds.
+7. **Real TRELLIS training inputs** (added 2026-10-18): TRELLIS on the smooth photo of every
+   train build (`real_trellis_train/`, 244 valid), mixed into training
+   (`train --trellis-share`). r3 with them is not better than r1; it showed that the model's
+   geometry is its input's ([phase5.md](phase5.md#r3-2026-10-18-real-trellis-output-of-the-train-builds)).
 
 Open questions (for you; nothing below is decided).
 
@@ -728,9 +768,9 @@ buildings), which is one more reason for the real-TRELLIS calibration subset bel
 
 ---
 
-## 8. Model and training (unchanged in outline; nothing implemented)
+## 8. Model and training (the 2026-09 outline)
 
-*Splits and the never-train-on-real rule superseded by D13 and D17, input resolution by D16 ([version 4](#version-4-2026-10-11-schematic-first-pivot)).*
+*Splits and the never-train-on-real rule superseded by D13 and D17, input resolution by D16 ([version 4](#version-4-2026-10-11-schematic-first-pivot)). Implemented in Phase 5 with the changes in [Phase 5](#phase-5-revised-2026-10-17): mcvox-v3 targets, the 2× input, a y-position input instead of the ground height, a material head only where needed, no LoD2 samples.*
 
 - Dense 3D residual U-Net, 64³ windows to start (batch 8), 96³ as the first upgrade; two
   heads (shape, material); inputs: occupancy, surface flag, RGB, height.
