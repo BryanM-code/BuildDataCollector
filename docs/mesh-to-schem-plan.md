@@ -28,8 +28,9 @@ pairs       human .schem (target) → coloured surface mesh → synth/degrade.py
 | Builds | 321 human-built realistic schematics (Planet Minecraft 235 + Abfielder 86), frozen 2026-10-11 as **real-schems-v1** |
 | Location | `data/real-schems-v1/` (local only): read-only `source/` copy plus `index.json`, `splits.json`, `near_duplicates.json`. See [real-schems-v1.md](real-schems-v1.md) |
 | Collected at | `C:\Users\mendo\Documents\Codex\2026-10-05\find-and-download-30-high-quality-2\outputs\Real2Minecraft_Dataset\` (never written to) |
+| Combined (2026-10-21/22) | **real-schems-v2** = v1 unchanged (its rows, splits and frozen copy) + 691 new Planet Minecraft builds (`C:\Users\mendo\Documents\Codex\real-schems-collect-v2\`, never written to, frozen as `data/real-schems-v2/source/`): 1,012 builds, train 908 / val 48 / test 38 / excluded 18, normalize-6 (D26). See [real-schems-v2.md](real-schems-v2.md) |
 
-### Decisions (2026-10-11; D15 revised and D20–D24 added 2026-10-12; D20 amended and D25 added 2026-10-17)
+### Decisions (2026-10-11; D15 revised and D20–D24 added 2026-10-12; D20 amended and D25 added 2026-10-17; D26 added 2026-10-22)
 
 - **D13 Data direction: schematic-first.** Human builds are targets, inputs are derived from
   them. The Objaverse synth path is parked (kept, not deleted, possible pretraining source
@@ -151,6 +152,21 @@ pairs       human .schem (target) → coloured surface mesh → synth/degrade.py
   the rooms' back walls, and the target opens them up. The other three `ground_fallback`
   builds (all train) and the 10 `multi_building` compounds are kept as they are. Applied
   like D24, so no other build moves: test 32 → 31.
+- **D26 (2026-10-22): real-schems-v2, v1 kept fixed; site cleanup; 13 more set aside.**
+  - The new collection is a second frozen dataset combined with v1 (`freeze --base`): v1's
+    rows, splits and files are untouched, so every v1 val / test result stays comparable. A
+    new build joins the split of a v1 creator group it is linked to (same creator, links,
+    near-duplicate candidates), otherwise train; one linked to two v1 splits, or duplicating
+    a v1 build of another split, is excluded. New val 16, test 7.
+  - normalize-6 adds crop steps 9-11 (D23's rules unchanged): terrain masses (natural
+    material at least 5 thick, mostly terrain fill, below or beside the building's built
+    envelope), flat aprons (streets, lots, plazas more than 3 columns from the building),
+    trees against the building, detached parts. Applied to v1 too: its median build keeps
+    99.9% of its blocks (40 lose over 5%: tree rings, parking lots, a car by the cemetery
+    chapel); the review found no building damaged.
+  - 13 new builds set aside (`SET_ASIDE_NEW`, after the seeded assignment, so no other build
+    moves): 9 landscape dioramas (D24's flag), 2 display stands, 1 capture of two unrelated
+    builds, 1 unfinished build.
 
 ### Phase plan
 
